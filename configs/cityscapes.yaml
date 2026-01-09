@@ -1,0 +1,27 @@
+# arguments for dataset
+dataset: cityscapes
+nclass: 19
+# crop_size: 801
+crop_size: 256
+data_root: /home/dev/Data
+
+# arguments for training
+epochs: 240
+batch_size: 4
+lr: 0.005  # 4GPUs
+lr_multi: 1.0
+criterion:
+  name: OHEM
+  kwargs:
+    ignore_index: 255
+    thresh: 0.7
+    min_kept: 100000
+conf_thresh: 0.0
+
+# arguments for model
+backbone: resnet101
+pretrain : "/home/dev/CorrMatch/pretrained/resnet101.pth"
+multi_grid: False
+replace_stride_with_dilation: [False, True, True]
+dilations: [12, 24, 36]
+thresh_init: 0.85
