@@ -1,8 +1,8 @@
 #! /bin/bash
 
-if [-f .env]; then
+if [ -f .env ]; then
     echo "Loading .env file"
-    export $(grep -v '^#' .env | xargs)
+    export $(grep -v '^#' .env | tr -d '\r' | xargs)
 else
     echo ".env file not found! Exiting."
     exit 1
@@ -10,7 +10,7 @@ fi
 
 echo "--------- Starting Environment Setup ---------"
 pip3 install --upgrade pip
-pip3 install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+pip3 install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu130
 pip3 install matplotlib \
              Pillow \
              tqdm \
@@ -28,12 +28,6 @@ echo "--------- Install Cityscapes dataset ---------"
 
 mkdir -P /workspace/data/cityscapes
 cd /workspace/data/cityscapes
-
-csDownload gtFine_trainvaltest.zip
-csDownload leftImg8bit_trainvaltest.zip
-
-unzip gtFine_trainvaltest.zip && rm gtFine_trainvaltest.zip
-unzip leftImg8bit_trainvaltest.zip && rm leftImg8bit_trainvaltest.zip
 
 echo "--------- Complete Cityscapes Installation ---------"
 
