@@ -2,6 +2,7 @@ from copy import deepcopy
 import math
 import numpy as np
 import os
+import os.path as osp
 import random
 
 from dataset.transform import *
@@ -13,7 +14,7 @@ from torchvision import transforms
 
 
 class SemiDataset(Dataset):
-    def __init__(self, name, root, mode, size=None, id_path=None, nsample=None):
+    def __init__(self, name, root, mode, valid_path=None, size=None, id_path=None, nsample=None):
         self.name = name
         self.root = root
         self.mode = mode
@@ -36,15 +37,15 @@ class SemiDataset(Dataset):
                 random.shuffle(self.ids) # ids 랜덤 셔플링
                 self.ids = self.ids[:nsample] # self.ids는 nsample 까지의 리스트로 재정의
         else:
-            with open('/home/dev/CorrMatch/partitions/%s/val.txt' % name, 'r') as f:
+            with open(valid_path, 'r') as f:
                 self.ids = f.read().splitlines()
 
     def __getitem__(self, item):
         image_path = self.ids[item]
         
         # ------------------- 데이터 읽기-------------------
-        img = Image.open(os.path.join(self.root, 'leftImg8bit_trainvaltest',image_path.split(' ')[0])).convert('RGB') # id에서 띄어쓰기로 split하여 맨 처음 이름으로 가져온 파일을 rgb형태로 오픈
-        mask = Image.open(os.path.join(self.root, 'gtFine_trainvaltest', image_path.split(' ')[1]))
+        img = Image.open(osp.join(self.root, 'leftImg8bit_trainvaltest',image_path.split(' ')[0])).convert('RGB')
+        mask = Image.open(osp.join(self.root, 'gtFine_trainvaltest', image_path.split(' ')[1]))
         mask = np.array(mask)
         
         gt_copy = mask.copy()

@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import os.path as osp
 import pprint
 
 from tqdm import tqdm
@@ -29,23 +30,23 @@ from util.thresh_helper import ThreshController
 from einops import rearrange # tensor들을 간결하게 transpose
 import random
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 ############## path 설정 argparser ##############
 
 parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-parser.add_argument('--config', type=str, default='/home/dev/CorrMatch/configs/cityscapes.yaml')
-parser.add_argument('--labeled_id_path', type=str, default='/home/dev/CorrMatch/partitions/cityscapes/1_4/labeled.txt')
-parser.add_argument('--unlabeled_id_path', type=str, default='/home/dev/CorrMatch/partitions/cityscapes/1_4/unlabeled.txt')
-parser.add_argument('--save_path', type=str, default='/home/dev/weights')
+parser.add_argument('--config', type=str, default=osp.join(os.getcwd(), 'configs/cityscapes.yaml'))
+parser.add_argument('--labeled_id_path', type=str, default=osp.join(os.getcwd(), "partitions/cityscapes/1_4/labeled.txt"))
+parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(os.getcwd(), "partitions/cityscapes/1_4/unlabeled.txt"))
+parser.add_argument('--val_id_path', type=str, default=osp.join(os.getcwd(), "partitions/cityscapes/val.txt"))
+parser.add_argument('--pretrained_path', type=str, default=osp.join(os.getcwd(), 'pretrained'))
+parser.add_argument('--save_path', type=str, default='/home/dev/experiments')
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
 parser.add_argument('--num_workers', type=int, default=0)
 
 
 
-################ SEED 설정 ###############
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
     np.random.seed(seed)
@@ -59,9 +60,8 @@ def init_seeds(seed=0, cuda_deterministic=False):
         cudnn.deterministic = False
         cudnn.benchmark = True
 
-################### 파이선 main 실행 함수 시작 ####################3
-# region - main
 
+# region - main
 def main():
     args = parser.parse_args() # arg parser 정의
 
@@ -78,9 +78,7 @@ def main():
 
     init_seeds(0, False)
 
-    model = DeepLabV3Plus(cfg) # 모델 정의 여기서는 deeplabv3+ 모델을 default로
-    # sam = sam_model_registry["vit_b"](checkpoint="sam/checkpoints/sam_vit_b.pth")
-    # sam.cuda()
+    model = DeepLabV3Plus(cfg, pretrained_path=osp.join(os.getcwd(), 'pretrained', cfg['backbone']+'.pth'))
 
     if rank == 0:
         logger.info('Total params: {:.1f}M\n'.format(count_params(model)))
@@ -121,7 +119,8 @@ def main():
                                     nsample=len(unlabel_train_set.ids))
     
     validation_set = SemiDataset(name=cfg['dataset'], 
-                                 root=cfg['data_root'], 
+                                 root=cfg['data_root'],
+                                 valid_path=args.val_id_path, 
                                  mode='val')
 
 

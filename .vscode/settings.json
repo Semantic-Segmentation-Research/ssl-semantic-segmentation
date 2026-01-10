@@ -1,0 +1,103 @@
+{
+    "editor.semanticHighlighting.enabled": false,
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": ["constant.other.caps.python"],
+                "settings": {
+                    "foreground": "#ff953e",
+                }
+            },
+            {
+                "scope": ["string.quoted.docstring.multi.python"],
+                "settings": {
+                    "foreground": "#007500",
+                    "fontStyle": "italic"
+                }
+            },
+            {
+                "scope": ["support.type.python"],
+                "settings": {
+                    "foreground": "#3bff9d",
+                    "fontStyle": "bold"
+                }
+            },
+             {
+                "scope":["variable.parameter.function.language.python"],
+                "settings": {
+                    "foreground": "#D4D4D4",
+                }
+            },
+            {
+                "scope":["entity.name.function"],
+                "settings": {
+                    "foreground": "#FFC66D",
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope":"constant.language.python",
+                "settings": {
+                    "foreground": "#3c3ff0",
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope":"support.type.exception.python",
+                "settings": {
+                    "foreground": "#e42929",
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope":"meta.attribute.python",
+                "settings":{
+                    "foreground": "#cc99cc",
+                }
+            },
+            {
+                "scope":"entity.name.type.class.python",
+                "settings":{
+                    "foreground": "#ff6666",
+                }
+            },
+            {            
+                "scope":"meta.function-call.generic.python",
+                "settings": {
+                    "foreground": "#f1e29d",
+                }
+            },
+            {            
+                "scope":"variable.parameter.function.language.special.self.python",
+                "settings": {
+                    "foreground": "#ab08f7",
+                }
+            },
+            {            
+                "scope":"comments",
+                "settings": {
+                    "foreground": "#2780d3",
+                }
+            }, 
+            {            
+                "scope":"string.quoted.docstring.multi.python",
+                "settings": {
+                    "foreground": "#3acc3a",
+                }
+            },
+            {            
+                "scope":"support.function",
+                "settings": {
+                    "foreground": "#00FFFF",
+                }
+            },
+            {
+                "scope":"variable.parameter.function-call.python",
+                "settings": {
+                    "foreground": "#ff0000",
+                }
+            } 
+        ]
+    },
+    "git.ignoreLimitWarning": true,
+}

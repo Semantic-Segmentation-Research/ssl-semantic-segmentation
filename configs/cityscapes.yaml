@@ -3,7 +3,7 @@ dataset: cityscapes
 nclass: 19
 # crop_size: 801
 crop_size: 256
-data_root: /home/dev/Data
+data_root: /home/dev/data
 
 # arguments for training
 epochs: 240
@@ -20,7 +20,7 @@ conf_thresh: 0.0
 
 # arguments for model
 backbone: resnet101
-pretrain : "/home/dev/CorrMatch/pretrained/resnet101.pth"
+# pretrain : "/home/dev/CorrMatch/pretrained/resnet101.pth"
 multi_grid: False
 replace_stride_with_dilation: [False, True, True]
 dilations: [12, 24, 36]

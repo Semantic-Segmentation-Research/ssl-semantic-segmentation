@@ -9,14 +9,16 @@ from einops import rearrange
 
 
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, pretrained_path):
         super(DeepLabV3Plus, self).__init__()
         self.is_corr = True
+        self.pretrained_path = pretrained_path
 
         if 'resnet' in cfg['backbone']:
-            self.backbone = \
-                resnet.__dict__[cfg['backbone']](cfg['pretrain'], multi_grid=cfg['multi_grid'],
-                                                 replace_stride_with_dilation=cfg['replace_stride_with_dilation'])
+            backbone = resnet.__dict__[cfg['backbone']]
+            self.backbone = backbone(pretrained_path,
+                                     multi_grid=cfg['multi_grid'],
+                                     replace_stride_with_dilation=cfg['replace_stride_with_dilation'])
         else:
             assert cfg['backbone'] == 'xception'
             self.backbone = xception(True)

@@ -153,8 +153,7 @@ class ResNet(nn.Module):
 def _resnet(arch, block, layers, pretrained, **kwargs):
     model = ResNet(block, layers, **kwargs)
     if pretrained:
-        pretrained_path = "/home/dev/CorrMatch/pretrained/%s.pth" % arch
-        state_dict = torch.load(pretrained_path)
+        state_dict = torch.load(pretrained)
         model.load_state_dict(state_dict, strict=False)
     return model
 
