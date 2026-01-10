@@ -2,7 +2,7 @@
 dataset: cityscapes
 nclass: 19
 # crop_size: 801
-crop_size: 256
+crop_size: 384
 data_root: /home/dev/data
 
 # arguments for training

@@ -44,8 +44,8 @@ class SemiDataset(Dataset):
         image_path = self.ids[item]
         
         # ------------------- 데이터 읽기-------------------
-        img = Image.open(osp.join(self.root, 'leftImg8bit_trainvaltest',image_path.split(' ')[0])).convert('RGB')
-        mask = Image.open(osp.join(self.root, 'gtFine_trainvaltest', image_path.split(' ')[1]))
+        img = Image.open(osp.join(self.root, image_path.split(' ')[0])).convert('RGB')
+        mask = Image.open(osp.join(self.root, image_path.split(' ')[1]))
         mask = np.array(mask)
         
         gt_copy = mask.copy()

@@ -12,7 +12,7 @@ from dataset.semi import SemiDataset
 from util.utils import AverageMeter, intersectionAndUnion
 
 
-def evaluate(model, loader, mode, cfg):
+def evaluate(rank, model, loader, mode, cfg):
     return_dict = {}
     model.eval()
     assert mode in ['original', 'center_crop', 'sliding_window']
@@ -55,9 +55,10 @@ def evaluate(model, loader, mode, cfg):
             reduced_union = torch.from_numpy(union).cuda()
             reduced_target = torch.from_numpy(target).cuda()
 
-            dist.all_reduce(reduced_intersection)
-            dist.all_reduce(reduced_union)
-            dist.all_reduce(reduced_target)
+            if rank != 0:
+                dist.all_reduce(reduced_intersection)
+                dist.all_reduce(reduced_union)
+                dist.all_reduce(reduced_target)
 
             intersection_meter.update(reduced_intersection.cpu().numpy())
             union_meter.update(reduced_union.cpu().numpy())

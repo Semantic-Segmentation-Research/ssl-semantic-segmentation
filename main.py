@@ -190,6 +190,8 @@ def main():
             img_u_s_mix = img_u_s_mix.cuda()
             ignore_mask_mix = ignore_mask_mix.cuda()
             
+            if step == 1: break
+            
             with torch.no_grad():
                 model.eval()
                 res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False) # unlabeled weak aug 모델학습
@@ -357,21 +359,25 @@ def main():
         else:
             eval_mode = 'original'
         torch.cuda.empty_cache()
-        res_val = evaluate(model, validation_loader, eval_mode, cfg)
+        res_val = evaluate(rank, model, validation_loader, eval_mode, cfg)
         mIOU = res_val['mIOU']
         class_IOU = res_val['iou_class']
-        torch.distributed.barrier()
 
         if rank == 0:
             logger.info('***** Evaluation {} ***** >>>> meanIOU: {:.4f} \n'.format(eval_mode, mIOU))
             logger.info('***** ClassIOU ***** >>>> \n{}\n'.format(class_IOU))
+        else:
+            torch.distributed.barrier()
 
         if mIOU > previous_best and rank == 0:
             if previous_best != 0:
-                os.remove(os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], previous_best)))
+                os.remove(osp.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], previous_best)))
             previous_best = mIOU
-            torch.save(model.module.state_dict(), os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
-        torch.distributed.barrier()
+            # torch.save(model.modules.state_dict(), osp.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
+            torch.save(model.state_dict(), osp.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
+        
+        if rank != 0:
+            torch.distributed.barrier()
         torch.cuda.empty_cache()
 
 
