@@ -386,6 +386,12 @@ def main():
                                           "optimization/learning_rate": lr,
                                           "accuracy/eval/mIOU": mIOU,
                                           })
+        img_us = img_u_s.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_us1 = pred_u_s1.detach().softmax(dim=1).argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        tb.draw_image(image=img_us, 
+                      pred=pred_us1,
+                      image_path=u_image_path,
+                      epoch=epoch)
 
         # retion - tensorboard
         # pred_mask_us1 = pred_u_s1.detach().argmax(dim=1).unsqueeze(1).cpu()
