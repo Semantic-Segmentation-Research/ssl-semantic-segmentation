@@ -9,18 +9,18 @@ from einops import rearrange
 
 
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, cfg, pretrained_path):
+    def __init__(self, cfg, mcfg, pretrained_path):
         super(DeepLabV3Plus, self).__init__()
         self.is_corr = True
         self.pretrained_path = pretrained_path
 
-        if 'resnet' in cfg['backbone']:
-            backbone = resnet.__dict__[cfg['backbone']]
+        if 'resnet' in mcfg.backbone:
+            backbone = resnet.__dict__[mcfg.backbone]
             self.backbone = backbone(pretrained_path,
                                      multi_grid=cfg['multi_grid'],
                                      replace_stride_with_dilation=cfg['replace_stride_with_dilation'])
         else:
-            assert cfg['backbone'] == 'xception'
+            assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
         low_channels = 256
@@ -38,11 +38,11 @@ class DeepLabV3Plus(nn.Module):
                                   nn.BatchNorm2d(256),
                                   nn.ReLU(True))
 
-        self.classifier = nn.Conv2d(256, cfg['nclass'], 1, bias=True)
+        self.classifier = nn.Conv2d(256, mcfg.num_classes, 1, bias=True)
 
 
         if self.is_corr:
-            self.corr = Corr(nclass=cfg['nclass'])
+            self.corr = Corr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
                 nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
                 nn.BatchNorm2d(256),

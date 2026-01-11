@@ -1,6 +1,8 @@
 import numpy as np
 import logging # 파이썬 표준 로깅 모듈
 import os
+import os.path as osp
+import shutil
 
 
 def count_params(model):
@@ -135,3 +137,9 @@ def init_log(name, level=logging.INFO):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
     return logger
+
+
+def save_codes(tcfg, directory):
+    for f in os.listdir(directory):
+        if f.endswith('.py'):
+            shutil.copy(osp.join(directory, f), osp.join(tcfg.exp_dir, "codes", tcfg.model_name))
