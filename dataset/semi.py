@@ -91,7 +91,7 @@ class SemiDataset(Dataset):
         # ------------------------------------------------------------
         
         # return img_w, img_s, np.array(img_w), ignore_mask, cutmix_box, image_path
-        return img_w, img_s, ignore_mask, cutmix_box
+        return img_w, img_s, ignore_mask, cutmix_box, image_path
 
     def __len__(self):
         return len(self.ids)

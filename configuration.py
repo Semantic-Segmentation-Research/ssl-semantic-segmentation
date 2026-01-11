@@ -13,7 +13,8 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "deeplabv3plus_resnet101"
+    # model_name: str     = "deeplabv3plus_resnet101"
+    model_name: str     = "test"
 
     exp_dir: str        = osp.join(os.getcwd(), "experiments")
     data_root: str      = osp.join(os.getcwd(), 'data')

@@ -18,9 +18,10 @@ from PIL import Image
 import matplotlib
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
-
+import torchvision
 matplotlib.use('agg')
 import yaml
+from ssl_tensorboard import SSLTensorBoard
 
 from dataset.semi import SemiDataset
 from model.semseg.deeplabv3plus import DeepLabV3Plus
@@ -30,7 +31,7 @@ from util.ohem import ProbOhemCrossEntropy2d
 from util.utils import count_params, init_log
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
-from einops import rearrange # tensor들을 간결하게 transpose
+from einops import rearrange
 import random
 
 from configuration import TrainConfig, ModelConfig
@@ -68,20 +69,20 @@ def main():
 
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader) # yaml 파일 로드 (config 옵션 쉽게 꺼내쓰기 위함)
 
-    logger = init_log('global', logging.INFO) # 
+    logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
     rank, world_size = setup_distributed(port=args.port)
 
     if rank == 0:
-        logger.info('{}\n'.format(pprint.pformat(cfg)))
+        logger.info(f'{pprint.pformat(cfg)}\n')
 
     init_seeds(0, False)
 
     model = DeepLabV3Plus(cfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
 
     if rank == 0:
-        logger.info('Total params: {:.1f}M\n'.format(count_params(model)))
+        logger.info(f'Total params: {count_params(model):.1f}M\n')
 
     optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
                      {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
@@ -151,15 +152,18 @@ def main():
                                    sampler=valsampler)
 
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
-
+    tb = SSLTensorBoard(writer)
+    
     total_iters = len(unlabel_train_loader) * tcfg.num_epochs
     previous_best = 0.0
-    thresh_controller = ThreshController(nclass=21, momentum=0.999, thresh_init=cfg['thresh_init'])
+    thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=cfg['thresh_init'])
 
     total_loss              = MeanMetric().to(local_rank).cuda()
     total_label_loss        = MeanMetric().to(local_rank).cuda()
     total_label_loss_corr   = MeanMetric().to(local_rank).cuda()
     total_loss_s            = MeanMetric().to(local_rank).cuda()
+    total_loss_w_fp         = MeanMetric().to(local_rank).cuda()
+    total_loss_corr_u       = MeanMetric().to(local_rank).cuda()
     
     # region - Train
     for epoch in range(tcfg.num_epochs):
@@ -174,9 +178,9 @@ def main():
         #         f"Previous best: {previous_best:.2f}"
         #         )
 
-        total_loss_w_fp = 0.0
+        # total_loss_w_fp = 0.0
         total_loss_kl = 0.0
-        total_loss_corr_u = 0.0
+        # total_loss_corr_u = 0.0
         total_mask_ratio = 0.0
         if use_ddp:
             label_train_loader.sampler.set_epoch(epoch) # epoch마다 shuffle seed 바꾸기 위한 작업
@@ -190,9 +194,11 @@ def main():
 
         # load data
         for step, ((label_image, label_mask),
-                   (img_u_w, img_u_s, ignore_mask, cutmix_box),
-                   (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _)) in enumerate(loader):
+                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
+                   (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(loader):
 
+            if step == 1: break
+            
             label_image, label_mask = label_image.cuda(), label_mask.cuda()
             img_u_w = img_u_w.cuda()
             img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
@@ -343,8 +349,8 @@ def main():
             total_label_loss_corr.update(label_loss_corr.detach())
             total_loss_s.update(loss_u_s1.detach())
             total_loss_kl += loss_u_kl.item()
-            total_loss_w_fp += loss_u_w_fp.item()
-            total_loss_corr_u += loss_u_corr.item()
+            total_loss_w_fp.update(loss_u_w_fp.detach())
+            total_loss_corr_u.update(loss_u_corr.detach())
             total_mask_ratio += ((conf_u_w >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
 
@@ -357,17 +363,10 @@ def main():
             if step % 50 == 0 and rank == 0:
                 hyperparam = f"Model: {tcfg.model_name:>5} | Epoch: [{epoch}/{tcfg.num_epochs:>5}] | Step: {step}/{len(unlabel_train_loader):>5} | lr: {lr:5.4f} | "
                 loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
-                            f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp/(step+1):.3f}, loss_corr_u: {total_loss_corr_u/(step+1):.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
+                            f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + loss_info)
-                
-        writer.add_scalar("optimization/loss/loss", total_loss.compute(), global_step=epoch)
-        writer.add_scalar("optimization/loss/label loss", total_label_loss.compute(), global_step=epoch)
-        writer.add_scalar("optimization/loss/label loss corr", total_label_loss_corr.compute(), global_step=epoch)
-        writer.add_scalar("optimization/loss/unlabel strong loss1", total_loss_s.compute(), global_step=epoch)
         
-        # if rank == 0:
-        #     tbar.close()
-
+        
         if tcfg.dataset == 'cityscapes':
             eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'sliding_window'
         else:
@@ -378,19 +377,33 @@ def main():
         mIOU = res_val['mIOU']
         class_IOU = res_val['iou_class']
 
+        tb.draw_scalar(epoch=epoch, item={"optimization/loss/total loss": total_loss.compute(), 
+                                          "optimization/loss/label loss": total_label_loss.compute(), 
+                                          "optimization/loss/label loss corr": total_label_loss_corr.compute(), 
+                                          "optimization/loss/unlabel strong loss1": total_loss_s.compute(), 
+                                          "optimization/loss/label weak fp loss": total_loss_w_fp.compute(), 
+                                          "optimization/loss/unlabel corr loss": total_loss_corr_u.compute(),
+                                          "optimization/learning_rate": lr,
+                                          "accuracy/eval/mIOU": mIOU,
+                                          })
+
+        # retion - tensorboard
+        # pred_mask_us1 = pred_u_s1.detach().argmax(dim=1).unsqueeze(1).cpu()
+        # pred_mask_us1 = pred_mask_us1.repeat(1, 3, 1, 1).float()
+        # img_us = img_u_s.detach().cpu()
+        # padding = torch.full(size=(tcfg.batch_size, 3, img_us.shape[2], 100), 
+        #                     fill_value=255.0, 
+        #                     dtype=torch.float32,
+        #                     device=img_us.device)
+        # vis = torch.cat([img_us, padding, pred_mask_us1], dim=-1)
+        # grid = torchvision.utils.make_grid(vis, nrow=4, normalize=False)
         
-        mask_u_s1 = pred_u_s1.detach().argmax(dim=1).unsqueeze(1)
-        # img_u_s = img_u_s.detach().cpu()
-        # blank = np.zeros(shape=(10, 10, 3))
-        # for img_us, mask_us in zip(img_u_s, mask_u_s1):
-        #     img_us = img_us.permute(1,2,0).numpy()
-        #     mask_us = mask_us.numpy()
-        #     mask_us = np.stack([mask_us] * 3, axis=-1)
-            
-        #     vis = np.concatenate([img_us, blank, mask_us], axis=1)
-        
-        writer.add_image("unlabel/train image", img_u_s[0], global_step=epoch)
-        writer.add_image("unlabel/train image", mask_u_s1[0], global_step=epoch)
+        # vis_with_names = []
+        # for i in range(vis.shape[0]):
+        #     filename = osp.split(u_image_path[i])[-1] # 전체 경로에서 파일명만 추출
+        #     # 헬퍼 함수 호출
+        #     vis_with_names.append(tb.draw_text_on_tensor(vis[i], filename))
+        # writer.add_image("unlabel/zBatch", grid, global_step=epoch)
         
         if rank == 0:
             logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {mIOU:.4f} \n')
@@ -420,5 +433,5 @@ if __name__ == '__main__':
     os.makedirs(osp.join(tcfg.exp_dir, "codes", tcfg.model_name), exist_ok=True)
     os.makedirs(osp.join(tcfg.exp_dir, "backups", tcfg.model_name), exist_ok=True)
     
-    utils.save_codes(tcfg, os.getcwd())
+    utils.save_codes(tcfg, osp.dirname(__file__))
     main()
