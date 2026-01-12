@@ -3,27 +3,25 @@ import logging
 import os
 import os.path as osp
 import pprint
+import random
+import time
+import datetime
 
-from tqdm import tqdm
 import numpy as np
 import torch
 from torch import nn
 from torchmetrics import MeanMetric
-import torch.distributed as dist
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torch.optim import SGD
 from torch.utils.data import DataLoader
-from PIL import Image
-import matplotlib
-import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
-import torchvision
+import matplotlib
 matplotlib.use('agg')
 import yaml
-from ssl_tensorboard import SSLTensorBoard
 
 from dataset.semi import SemiDataset
+from ssl_tensorboard import SSLTensorBoard
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
 import util.utils as utils
@@ -32,7 +30,6 @@ from util.utils import count_params, init_log
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
-import random
 
 from configuration import TrainConfig, ModelConfig
 
@@ -154,10 +151,10 @@ def main():
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
     
-    total_iters = len(unlabel_train_loader) * tcfg.num_epochs
-    previous_best = 0.0
+    num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
     thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=cfg['thresh_init'])
 
+    previous_best = 0.0
     total_loss              = MeanMetric().to(local_rank).cuda()
     total_label_loss        = MeanMetric().to(local_rank).cuda()
     total_label_loss_corr   = MeanMetric().to(local_rank).cuda()
@@ -165,39 +162,30 @@ def main():
     total_loss_w_fp         = MeanMetric().to(local_rank).cuda()
     total_loss_corr_u       = MeanMetric().to(local_rank).cuda()
     
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
     # region - Train
     for epoch in range(tcfg.num_epochs):
         total_loss.reset()
         total_label_loss.reset()
         total_label_loss_corr.reset()
         total_loss_s.reset()
-        # if rank == 0:
-        #     logger.info(
-        #         f"===========> Epoch: {epoch},"
-        #         f"LR: {optimizer.param_groups[0]['lr']:.4f}, "
-        #         f"Previous best: {previous_best:.2f}"
-        #         )
-
-        # total_loss_w_fp = 0.0
         total_loss_kl = 0.0
-        # total_loss_corr_u = 0.0
         total_mask_ratio = 0.0
+        
         if use_ddp:
             label_train_loader.sampler.set_epoch(epoch) # epoch마다 shuffle seed 바꾸기 위한 작업
             unlabel_train_loader.sampler.set_epoch(epoch)
         
-        # loader에 labeled 데이터로더, unlabeled cutmixed 데이터로더, unlabeled 데이터 로더
         loader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
 
-        # if rank == 0
-        #     tbar = tqdm(total=len(label_train_loader))
-
-        # load data
-        for step, ((label_image, label_mask),
+        # region step 시작
+        for step, ((label_image, label_mask, l_image_path),
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
                    (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(loader):
 
-            if step == 1: break
+            start_event.record()
             
             label_image, label_mask = label_image.cuda(), label_mask.cuda()
             img_u_w = img_u_w.cuda()
@@ -221,7 +209,7 @@ def main():
             model.train()
             label_batch_size, unlabel_batch_size = label_image.shape[0], img_u_w.shape[0]
             
-            # region: model 호출1
+            # region model 호출1
             res_w = model(torch.cat((label_image, img_u_w)), need_fp=True, use_corr=True)
 
             preds = res_w['out'] # 모델의 디코더 출력
@@ -235,7 +223,7 @@ def main():
             pred_x, pred_u_w = preds.split([label_batch_size, unlabel_batch_size]) # 라벨이미지와 언라벨이미지의 logits
             pred_u_w_fp = preds_fp[label_batch_size:] # unlabeled weak 배치만
 
-            # region: model 호출2
+            # region model 호출2
             res_s = model(img_u_s, need_fp=False, use_corr=True)
             pred_u_s1 = res_s['out']
             pred_u_s1_corr = res_s['corr_out']
@@ -276,8 +264,6 @@ def main():
             # conf_filter_u_w_sample: M_i
             segments = (corr_map_u_w_cutmixed1 * conf_filter_u_w_sample).bool() # region-propa 재료
             # segments : encoder에서의 유사도와 모델 예측 confidence를 곱해서 더더욱 중요한 부분만 살리기 위함
-            # 12-20
-            
             
             ########### 9번 수식 전체 ############### region propag
             for img_idx in range(b_sample):
@@ -355,17 +341,26 @@ def main():
                                 (ignore_mask != 255).sum().item()
 
             iters = epoch * len(unlabel_train_loader) + step
-            lr = tcfg.lr * (1 - iters / total_iters) ** 0.9
+            lr = tcfg.lr * (1 - iters / num_total_steps) ** 0.9
             optimizer.param_groups[0]["lr"] = lr
             optimizer.param_groups[1]["lr"] = lr * cfg['lr_multi']
 
+            end_event.record()
+            torch.cuda.synchronize()
+            
+            elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+            time_left = (num_total_steps - iters) * elapsed_time
+            # time_left = time.strftime("%H:%M:%S", time.gmtime(time_left))
+            time_left = str(datetime.timedelta(seconds=int(time_left)))
+            
             
             if step % 50 == 0 and rank == 0:
-                hyperparam = f"Model: {tcfg.model_name:>5} | Epoch: [{epoch}/{tcfg.num_epochs:>5}] | Step: {step}/{len(unlabel_train_loader):>5} | lr: {lr:5.4f} | "
+                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s | lr: {lr:5.4f}"
                 loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
-                print(hyperparam + loss_info)
-        
+                print(hyperparam + '\n' + loss_info)
+                print('-'*100)
+        # region step 끝
         
         if tcfg.dataset == 'cityscapes':
             eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'sliding_window'
@@ -373,57 +368,70 @@ def main():
             eval_mode = 'original'
             
         torch.cuda.empty_cache()
-        res_val = evaluate(rank, model, validation_loader, eval_mode, cfg)
-        mIOU = res_val['mIOU']
+        res_val = evaluate(rank, model, validation_loader, "original", cfg)
         class_IOU = res_val['iou_class']
-
-        tb.draw_scalar(epoch=epoch, item={"optimization/loss/total loss": total_loss.compute(), 
-                                          "optimization/loss/label loss": total_label_loss.compute(), 
-                                          "optimization/loss/label loss corr": total_label_loss_corr.compute(), 
-                                          "optimization/loss/unlabel strong loss1": total_loss_s.compute(), 
-                                          "optimization/loss/label weak fp loss": total_loss_w_fp.compute(), 
-                                          "optimization/loss/unlabel corr loss": total_loss_corr_u.compute(),
-                                          "optimization/learning_rate": lr,
-                                          "accuracy/eval/mIOU": mIOU,
+        
+        # region  tensorboard
+        tb.draw_scalar(epoch=epoch, item={"Optimization/loss/total loss": total_loss.compute(), 
+                                          "Optimization/loss/label loss": total_label_loss.compute(), 
+                                          "Optimization/loss/label loss corr": total_label_loss_corr.compute(), 
+                                          "Optimization/loss/unlabel strong loss1": total_loss_s.compute(), 
+                                          "Optimization/loss/label weak fp loss": total_loss_w_fp.compute(), 
+                                          "Optimization/loss/unlabel corr loss": total_loss_corr_u.compute(),
+                                          "Optimization/learning_rate": lr,
+                                          "Time/Elapsed time": elapsed_time,
+                                          "Accuracy/eval/mIOU": res_val['mIOU'],
                                           })
+        
         img_us = img_u_s.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_us1 = pred_u_s1.detach().softmax(dim=1).argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        tb.draw_image(image=img_us, 
-                      pred=pred_us1,
-                      image_path=u_image_path,
+        pred_mask_us = pred_u_s1.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_us = pred_u_s1.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        tb.draw_image(tag="train/unlabel strong image", 
+                      image=img_us, 
+                      pred=pred_mask_us,
+                      conf=conf_us,
+                      mask=None,
+                      image_path=l_image_path,
                       epoch=epoch)
 
-        # retion - tensorboard
-        # pred_mask_us1 = pred_u_s1.detach().argmax(dim=1).unsqueeze(1).cpu()
-        # pred_mask_us1 = pred_mask_us1.repeat(1, 3, 1, 1).float()
-        # img_us = img_u_s.detach().cpu()
-        # padding = torch.full(size=(tcfg.batch_size, 3, img_us.shape[2], 100), 
-        #                     fill_value=255.0, 
-        #                     dtype=torch.float32,
-        #                     device=img_us.device)
-        # vis = torch.cat([img_us, padding, pred_mask_us1], dim=-1)
-        # grid = torchvision.utils.make_grid(vis, nrow=4, normalize=False)
-        
-        # vis_with_names = []
-        # for i in range(vis.shape[0]):
-        #     filename = osp.split(u_image_path[i])[-1] # 전체 경로에서 파일명만 추출
-        #     # 헬퍼 함수 호출
-        #     vis_with_names.append(tb.draw_text_on_tensor(vis[i], filename))
-        # writer.add_image("unlabel/zBatch", grid, global_step=epoch)
-        
+        img_uw = img_u_w.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_uw = pred_u_w.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_uw = pred_u_w.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        gt_uw = pred_u_w.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        tb.draw_image(tag="train/label weak image", 
+                      image=img_uw, 
+                      pred=pred_mask_uw,
+                      conf=conf_uw,
+                      mask=gt_uw,
+                      image_path=u_image_path,
+                      epoch=epoch)
+            
+        val_image       = res_val['img'].detach().cpu().permute(0, 2, 3, 1).numpy()
+        val_pred_mask   = res_val['pred'].detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        val_conf        = res_val['conf'].detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        val_gt          = res_val['mask'].detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        tb.draw_image(tag="valid/label image", 
+                      image=val_image, 
+                      pred=val_pred_mask,
+                      conf=val_conf,
+                      mask=val_gt,
+                      image_path=res_val['image_path'][0],
+                      epoch=epoch)
+
+
         if rank == 0:
-            logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {mIOU:.4f} \n')
+            logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
             logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
         else:
             torch.distributed.barrier()
 
-        if mIOU > previous_best and rank == 0:
+        if res_val['mIOU'] > previous_best and rank == 0:
             model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
             
             if previous_best != 0:
                 os.remove(osp.join(model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
-            previous_best = mIOU
-            torch.save(model.state_dict(), osp.join(model_save_dir, f'{mcfg.backbone}_{mIOU:.3f}.pth'))
+            previous_best = res_val['mIOU']
+            torch.save(model.state_dict(), osp.join(model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
         if rank != 0:
             torch.distributed.barrier()

@@ -3,6 +3,7 @@ import logging # 파이썬 표준 로깅 모듈
 import os
 import os.path as osp
 import shutil
+from PIL import Image
 
 
 def count_params(model):
@@ -99,23 +100,6 @@ def intersectionAndUnion(output, target, K, ignore_index=255):
     area_union = area_output + area_target - area_intersection
     return area_intersection, area_union, area_target
 
-##### logging을 쓰는 이유 #####
-
-# 출력부분 : 레벨별 메시지 (debug, info, warning, error, critical)
-# 콘솔부분 : 파일, 터미널, 네트워크 등 여러곳에 기록 가능
-# 일괄 제어 : 로그 포맷, 출력 레벨 정의 가능
-# 실무 : 실무용 디버깅, 모니터링 적합
-
-
-# logging.basicConfig(level=logging.INFO)
-
-# logging.debug()
-# logging.info()
-# logging.warning()
-# logging.error()
-# logging.critical()
-
-#############################
 
 logs = set()
 
@@ -143,3 +127,19 @@ def save_codes(tcfg, directory):
     for f in os.listdir(directory):
         if f.endswith('.py'):
             shutil.copy(osp.join(directory, f), osp.join(tcfg.exp_dir, "codes", tcfg.model_name))
+
+
+def colorize_mask(mask):
+    palette = [128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153, 153, 153, 153, 250, 170, 30,
+           220, 220, 0, 107, 142, 35, 152, 251, 152, 70, 130, 180, 220, 20, 60, 255, 0, 0, 0, 0, 142, 0, 0, 70,
+           0, 60, 100, 0, 80, 100, 0, 0, 230, 119, 11, 32]
+
+    zero_pad = 256 * 3 - len(palette)
+    for _ in range(zero_pad):
+        palette.append(0)
+    
+    # mask: numpy array of the mask
+    new_mask = Image.fromarray(mask.astype(np.uint8)).convert('P')
+    new_mask.putpalette(palette)
+
+    return new_mask

@@ -85,7 +85,9 @@ class DeepLabV3Plus(nn.Module):
         if use_corr:
             proj_feats = self.proj(c4)
             corr_out_dict = self.corr(proj_feats, out)
+            
             result_dict['binary_norm_corr_map'] = corr_out_dict['binary_norm_corr_map']
+            
             corr_out = corr_out_dict['corr_dec_out']
             corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
             result_dict['corr_out'] = corr_out

@@ -20,9 +20,10 @@ def evaluate(rank, model, loader, mode, cfg):
     union_meter = AverageMeter()
 
     with torch.no_grad():
-        for img, mask, ids, img_ori in loader:
+        for img, mask, image_path, img_ori in loader:
             img = img.cuda()
             b, _, h, w = img.shape
+            
             if mode == 'sliding_window':
                 grid = cfg['crop_size']
                 final = torch.zeros(b, 19, h, w).cuda()
@@ -44,10 +45,11 @@ def evaluate(rank, model, loader, mode, cfg):
                     start_h, start_w = (h - cfg['crop_size']) // 2, (w - cfg['crop_size']) // 2
                     img = img[:, :, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
                     mask = mask[:, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
-
+                
                 res = model(img)
                 pred = res['out'].argmax(dim=1)
-
+                conf = res['out'].softmax(dim=1).max(dim=1).values
+                
             intersection, union, target = \
                 intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), cfg['nclass'], 255)
 
@@ -65,8 +67,14 @@ def evaluate(rank, model, loader, mode, cfg):
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     mIOU = np.mean(iou_class) * 100.0
+    
     return_dict['iou_class'] = iou_class
     return_dict['mIOU'] = mIOU
+    return_dict['pred'] = pred
+    return_dict['conf'] = conf
+    return_dict['img'] = img
+    return_dict['mask'] = mask
+    return_dict['image_path'] = image_path
 
     return return_dict
 

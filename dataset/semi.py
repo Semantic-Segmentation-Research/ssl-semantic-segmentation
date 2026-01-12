@@ -5,6 +5,7 @@ import os
 import os.path as osp
 import random
 
+from util import utils
 from dataset.transform import *
 
 from PIL import Image
@@ -14,13 +15,14 @@ from torchvision import transforms
 
 
 class SemiDataset(Dataset):
-    def __init__(self, name, root, mode, valid_path=None, size=None, id_path=None, nsample=None):
+    def __init__(self, name, root, mode, vis_mask=False, valid_path=None, size=None, id_path=None, nsample=None):
         self.name = name
         self.root = root
         self.mode = mode
         self.size = size
         
-        self.vis_mask = False
+        self.vis_mask = vis_mask
+        
         self.ignore_label = 255
         self.id_to_trainid = {-1: self.ignore_label, 0: self.ignore_label, 1: self.ignore_label, 2: self.ignore_label,
                               3: self.ignore_label, 4: self.ignore_label, 5: self.ignore_label, 6: self.ignore_label,
@@ -53,14 +55,17 @@ class SemiDataset(Dataset):
             gt_copy[mask == key] = value
         mask = Image.fromarray(gt_copy.astype(np.uint8))
         
-        if self.mode == 'val': # validation 모드일때
-            img_ori = np.array(img) # img를 np.array형태로 변환하여
-            img, mask = normalize(img, mask) # ToTensor, Normalize를 입힘
-            return img, mask, image_path, img_ori # img, mask, id, img_original 반환
+        if self.vis_mask: 
+            vis_mask = utils.colorize_mask(mask)
+            
+        if self.mode == 'val':
+            image_path = image_path.split(' ')[0]
+            
+            img_ori = np.array(img) 
+            img, mask = normalize(img, mask)
+            
+            return img, mask, image_path, img_ori
         # ---------------------------------------------------------
-        
-        # mask visualization
-        if self.vis_mask: colorize_mask(mask)
         
         # -------------------- Weak Augmentation --------------------
         img, mask = resize(img, mask, (0.5, 2.0)) # 0.5와 2.0의 ratio를 적용한 랜덤 정수값으로 resize
@@ -70,7 +75,7 @@ class SemiDataset(Dataset):
 
         if self.mode == 'train_l':
             image, mask = normalize(img, mask) 
-            return image, mask
+            return image, mask, image_path
         # ---------------------------------------------------------
         
         img_w, img_s = deepcopy(img), deepcopy(img)
