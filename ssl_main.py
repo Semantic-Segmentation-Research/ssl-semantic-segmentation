@@ -20,7 +20,7 @@ import matplotlib
 matplotlib.use('agg')
 import yaml
 
-from dataset.semi import SemiDataset
+from dataset.semi import SemiDataset, GPUAugmentation
 from ssl_tensorboard import SSLTensorBoard
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
@@ -121,7 +121,7 @@ def main():
                                  valid_path=args.val_id_path, 
                                  mode='val')
 
-
+    aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
     use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
     
     trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
@@ -178,13 +178,23 @@ def main():
             label_train_loader.sampler.set_epoch(epoch) # epoch마다 shuffle seed 바꾸기 위한 작업
             unlabel_train_loader.sampler.set_epoch(epoch)
         
-        loader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
+        dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
 
         # region step 시작
+        # for step, ((label_image, label_mask, l_image_path),
+        #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
+        #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
         for step, ((label_image, label_mask, l_image_path),
-                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
-                   (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(loader):
-
+                   (img_u, mask_u_raw, _),
+                   (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
+            image, mask = image.cuda(), mask.cuda()
+            
+            if mode == 'train_l':
+                img_w, mask_w = aug_layer(image, mask, mode=mode)
+            else:
+                img_w, img_s, mask_w = aug_layer(image, mask, mode=mode)
+                
+            if step == 1: break
             start_event.record()
             
             label_image, label_mask = label_image.cuda(), label_mask.cuda()
@@ -394,15 +404,15 @@ def main():
                       image_path=l_image_path,
                       epoch=epoch)
 
-        img_uw = img_u_w.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_uw = pred_u_w.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_uw = pred_u_w.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        gt_uw = pred_u_w.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        img_l = label_image.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        gt = label_mask.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
-                      image=img_uw, 
-                      pred=pred_mask_uw,
-                      conf=conf_uw,
-                      mask=gt_uw,
+                      image=img_l, 
+                      pred=pred_mask_l,
+                      conf=conf_l,
+                      mask=gt,
                       image_path=u_image_path,
                       epoch=epoch)
             

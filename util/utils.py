@@ -135,10 +135,11 @@ def colorize_mask(mask):
            0, 60, 100, 0, 80, 100, 0, 0, 230, 119, 11, 32]
 
     zero_pad = 256 * 3 - len(palette)
-    for _ in range(zero_pad):
-        palette.append(0)
-    
-    # mask: numpy array of the mask
+    palette.extend([0] * zero_pad)
+
+    if mask.ndim == 3:
+        mask = mask.squeeze()
+        
     new_mask = Image.fromarray(mask.astype(np.uint8)).convert('P')
     new_mask.putpalette(palette)
 

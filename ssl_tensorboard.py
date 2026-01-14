@@ -27,15 +27,13 @@ class SSLTensorBoard:
 
         batch_size, H, W, _ = rgb.shape
         
-        pred_rgb = np.repeat(pred, repeats=3, axis=-1)
-        pred_rgb = np.stack(np.array([utils.colorize_mask(sample).convert('RGB') for sample in pred_rgb]))
+        pred_rgb = np.stack(np.array([utils.colorize_mask(sample).convert('RGB') for sample in pred]))
         
         conf_rgb = np.repeat(conf, repeats=3, axis=-1)
         conf_rgb = (conf_rgb * 255).astype(np.uint8)
         if mask is not None:
-            mask_rgb = np.repeat(mask, repeats=3, axis=-1)
-            mask_rgb = np.stack(np.array([utils.colorize_mask(sample).convert('RGB') for sample in mask_rgb]))
-        
+            mask_rgb = np.stack(np.array([utils.colorize_mask(sample).convert('RGB') for sample in mask]))
+            
         padding = np.ones((H, self.gap, 3), dtype=rgb.dtype) * 255
         
         fig_width = 12
