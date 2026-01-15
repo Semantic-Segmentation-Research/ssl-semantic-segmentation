@@ -8,7 +8,8 @@ import random
 import kornia.augmentation as K
 
 from util import utils
-from dataset.transform import *
+# from dataset.transform import *
+import dataset.transform as dt
 
 from PIL import Image
 import torch
@@ -129,7 +130,7 @@ class SemiDataset(Dataset):
         img = transforms.ToTensor()(img)
         gt = torch.from_numpy(np.array(mask)).long()
         
-        return self.mode, img, gt, image_path
+        return img, gt, image_path
             
 
     def __len__(self):
@@ -185,5 +186,6 @@ class GPUAugmentation(nn.Module):
 
         # 3. Strong Augmentation (Unlabeled 데이터용)
         img_s = self.strong_aug(img)
+        cutmix_box = dt.obtain_cutmix_box(img_s.size[0], p=0.5)
         
-        return img, img_s, mask
+        return img, img_s, cutmix_box, mask

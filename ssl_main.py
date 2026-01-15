@@ -103,21 +103,16 @@ def main():
     criterion_kl = nn.KLDivLoss(reduction='none').cuda(local_rank)
     
 
-    unlabel_train_set = SemiDataset(name=tcfg.dataset, 
-                                      root=tcfg.data_root, 
-                                      mode='train_u',
-                                      size=tcfg.crop_size, 
-                                      id_path=args.unlabeled_id_path)
+    unlabel_train_set = SemiDataset(root=tcfg.data_root, 
+                                    mode='train_u',
+                                    id_path=args.unlabeled_id_path)
     
-    label_train_set = SemiDataset(name=tcfg.dataset,
-                                    root=tcfg.data_root, 
-                                    mode='train_l',
-                                    size=tcfg.crop_size, 
-                                    id_path=args.labeled_id_path, 
-                                    nsample=len(unlabel_train_set.ids))
+    label_train_set = SemiDataset(root=tcfg.data_root, 
+                                  mode='train_l',
+                                  id_path=args.labeled_id_path, 
+                                  nsample=len(unlabel_train_set.ids))
     
-    validation_set = SemiDataset(name=tcfg.dataset, 
-                                 root=tcfg.data_root,
+    validation_set = SemiDataset(root=tcfg.data_root,
                                  valid_path=args.val_id_path, 
                                  mode='val')
 
@@ -185,25 +180,27 @@ def main():
         #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
         #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
         for step, ((label_image, label_mask, l_image_path),
-                   (img_u, mask_u_raw, _),
+                   (img_u, mask_u_raw, u_image_path),
                    (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
-            image, mask = image.cuda(), mask.cuda()
             
-            if mode == 'train_l':
-                img_w, mask_w = aug_layer(image, mask, mode=mode)
-            else:
-                img_w, img_s, mask_w = aug_layer(image, mask, mode=mode)
-                
+            img_l, mask_l = img_l.cuda(local_rank), mask_l.cuda(local_rank)
+            img_u, mask_u_raw = img_u.cuda(local_rank), mask_u_raw.cuda(local_rank)
+            img_u_mix, mask_u_mix_raw = img_u_mix.cuda(local_rank), mask_u_mix_raw.cuda(local_rank)
+
+            img_l, mask_l = aug_layer(img_l, mask_l, mode='train_l')
+            img_u_w, img_u_s, mask_u = aug_layer(img_u, mask_u_raw, mode='train_u')
+            img_u_w_mix, img_u_s_mix, mask_u_mix = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
+            
             if step == 1: break
             start_event.record()
             
-            label_image, label_mask = label_image.cuda(), label_mask.cuda()
-            img_u_w = img_u_w.cuda()
-            img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
-            cutmix_box = cutmix_box.cuda()
-            img_u_w_mix = img_u_w_mix.cuda()
-            img_u_s_mix = img_u_s_mix.cuda()
-            ignore_mask_mix = ignore_mask_mix.cuda()
+            # label_image, label_mask = label_image.cuda(), label_mask.cuda()
+            # img_u_w = img_u_w.cuda()
+            # img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
+            # cutmix_box = cutmix_box.cuda()
+            # img_u_w_mix = img_u_w_mix.cuda()
+            # img_u_s_mix = img_u_s_mix.cuda()
+            # ignore_mask_mix = ignore_mask_mix.cuda()
             
             
             with torch.no_grad():
