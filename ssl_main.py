@@ -176,10 +176,10 @@ def main():
         dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
 
         # region step 시작
-        # for step, ((label_image, label_mask, l_image_path),
+        # for step, ((img_l, mask_l, l_image_path),
         #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
         #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
-        for step, ((label_image, label_mask, l_image_path),
+        for step, ((img_l, mask_l, l_image_path),
                    (img_u, mask_u_raw, u_image_path),
                    (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
             
@@ -188,13 +188,13 @@ def main():
             img_u_mix, mask_u_mix_raw = img_u_mix.cuda(local_rank), mask_u_mix_raw.cuda(local_rank)
 
             img_l, mask_l = aug_layer(img_l, mask_l, mode='train_l')
-            img_u_w, img_u_s, mask_u = aug_layer(img_u, mask_u_raw, mode='train_u')
-            img_u_w_mix, img_u_s_mix, mask_u_mix = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
+            img_u_w, img_u_s, ignore_mask, cutmix_box = aug_layer(img_u, mask_u_raw, mode='train_u')
+            img_u_w_mix, img_u_s_mix, ignore_mask_mix, _ = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
             
             if step == 1: break
             start_event.record()
             
-            # label_image, label_mask = label_image.cuda(), label_mask.cuda()
+            # img_l, mask_l = img_l.cuda(), mask_l.cuda()
             # img_u_w = img_u_w.cuda()
             # img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
             # cutmix_box = cutmix_box.cuda()
@@ -209,15 +209,17 @@ def main():
                 pred_u_w_mix = res_u_w_mix['out'].detach() # weak aug 데이터의 output, 예측
                 conf_u_w_mix = pred_u_w_mix.softmax(dim=1).max(dim=1)[0] # classes채널에서의 softmax 후 최대확률
                 mask_u_w_mix = pred_u_w_mix.argmax(dim=1) # pseudo label
-                img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
-                    img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
+                # img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
+                #     img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
+                img_u_s[cutmix_box.expand(img_u_s.shape) == 1] = \
+                    img_u_s_mix[cutmix_box.expand(img_u_s.shape) == 1]
                     
             
             model.train()
-            label_batch_size, unlabel_batch_size = label_image.shape[0], img_u_w.shape[0]
+            label_batch_size, unlabel_batch_size = img_l.shape[0], img_u_w.shape[0]
             
             # region model 호출1
-            res_w = model(torch.cat((label_image, img_u_w)), need_fp=True, use_corr=True)
+            res_w = model(torch.cat((img_l, img_u_w)), need_fp=True, use_corr=True)
 
             preds = res_w['out'] # 모델의 디코더 출력
             preds_fp = res_w['out_fp'] # feature perturbation output
@@ -245,7 +247,8 @@ def main():
             b_sample, c_sample, _, _ = corr_map_u_w_cutmixed1.shape
 
             cutmix_box_map = (cutmix_box == 1)
-
+            cutmix_box_map = cutmix_box_map.squeeze(dim=1)
+            
             mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
             mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
             conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_mix[cutmix_box_map]
@@ -290,10 +293,10 @@ def main():
             
             conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | conf_filter_u_w
 
-            # loss_x = criterion_l(pred_x, label_mask)
-            # loss_x_corr = criterion_l(pred_x_corr, label_mask)
-            label_loss = criterion_l(pred_x, label_mask)
-            label_loss_corr = criterion_l(pred_x_corr, label_mask)
+            # loss_x = criterion_l(pred_x, mask_l)
+            # loss_x_corr = criterion_l(pred_x_corr, mask_l)
+            label_loss = criterion_l(pred_x, mask_l)
+            label_loss_corr = criterion_l(pred_x_corr, mask_l)
 
             # 1번 수식: Consistency Regularization
             loss_u_s1 = criterion_u(pred_u_s1, mask_u_w_cutmixed1)
@@ -401,10 +404,10 @@ def main():
                       image_path=l_image_path,
                       epoch=epoch)
 
-        img_l = label_image.detach().cpu().permute(0, 2, 3, 1).numpy()
+        img_l = img_l.detach().cpu().permute(0, 2, 3, 1).numpy()
         pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        gt = label_mask.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        gt = mask_l.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
                       image=img_l, 
                       pred=pred_mask_l,

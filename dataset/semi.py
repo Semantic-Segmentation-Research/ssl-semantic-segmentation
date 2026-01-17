@@ -151,7 +151,7 @@ class GPUAugmentation(nn.Module):
         
         # Weak Augmentation (Resize + Crop + Flip)
         self.weak_aug = K.AugmentationSequential(
-                    K.RandomResizedCrop(size=self.size, scale=(0.5, 2.0), p=1.0, resample='nearest'),
+                    K.RandomResizedCrop(size=self.size, scale=(0.5, 2.0), p=1.0, resample='bilinear'),
                     K.RandomHorizontalFlip(p=0.5),
                     data_keys=["input", "mask"]
                 )
@@ -174,18 +174,24 @@ class GPUAugmentation(nn.Module):
 
     @torch.no_grad()
     def forward(self, img, mask, mode='train_l'):
-        # 1. ID Mapping
         mask = self.map_id(mask)
         
-        # 2. Weak Augmentation
         img, mask = self.weak_aug(img, mask.float())
-        mask = mask.long()
 
         if mode == 'train_l':
+            mask = mask.long()
             return img, mask
 
-        # 3. Strong Augmentation (Unlabeled 데이터용)
         img_s = self.strong_aug(img)
-        cutmix_box = dt.obtain_cutmix_box(img_s.size[0], p=0.5)
+
+        ignore_mask = torch.zeros_like(mask).long()
+        ignore_mask[mask == 254] = self.ignore_label
+        ignore_mask = ignore_mask.squeeze()
         
-        return img, img_s, cutmix_box, mask
+        cutmix_box = dt.obtain_cutmix_box_gpu(batch_size=img_s.shape[0],
+                                              img_h=self.size[0],
+                                              img_w=self.size[1], 
+                                              device=img_s.device,
+                                              p=0.5)
+        
+        return img, img_s, ignore_mask, cutmix_box
