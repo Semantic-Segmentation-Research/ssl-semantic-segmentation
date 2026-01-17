@@ -176,6 +176,10 @@ class GPUAugmentation(nn.Module):
     def forward(self, img, mask, mode='train_l'):
         mask = self.map_id(mask)
         
+        if mode == 'val':
+            mask = mask.squeeze(dim=1)
+            return img, mask
+        
         img, mask = self.weak_aug(img, mask.float())
 
         if mode == 'train_l':

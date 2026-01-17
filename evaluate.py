@@ -9,23 +9,26 @@ from model.semseg.deeplabv3plus import DeepLabV3Plus
 from torch.utils.data import DataLoader
 import yaml
 from dataset.semi import SemiDataset
-from util.utils import AverageMeter, intersectionAndUnion
+# from util.utils import AverageMeter, intersectionAndUnion
+from util import utils
 
 
-def evaluate(rank, model, loader, mode, cfg):
+def evaluate(tcfg, mcfg, rank, model, loader, aug_layer, eval_mode):
     return_dict = {}
     model.eval()
-    assert mode in ['original', 'center_crop', 'sliding_window']
-    intersection_meter = AverageMeter()
-    union_meter = AverageMeter()
+    assert eval_mode in ['original', 'center_crop', 'sliding_window']
+    intersection_meter = utils.AverageMeter()
+    union_meter = utils.AverageMeter()
 
     with torch.no_grad():
-        for img, mask, image_path, img_ori in loader:
-            img = img.cuda()
+        for img, mask, image_path in loader:
+            img, mask = img.cuda(rank), mask.cuda(rank)
+            
+            img, mask = aug_layer(img, mask, mode='val')
             b, _, h, w = img.shape
             
-            if mode == 'sliding_window':
-                grid = cfg['crop_size']
+            if eval_mode == 'sliding_window':
+                grid = tcfg.crop_size[0]
                 final = torch.zeros(b, 19, h, w).cuda()
                 row = 0
                 while row < h:
@@ -40,30 +43,31 @@ def evaluate(rank, model, loader, mode, cfg):
                 pred = final.argmax(dim=1)
 
             else:
-                if mode == 'center_crop':
+                if eval_mode == 'center_crop':
                     h, w = img.shape[-2:]
-                    start_h, start_w = (h - cfg['crop_size']) // 2, (w - cfg['crop_size']) // 2
-                    img = img[:, :, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
-                    mask = mask[:, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
+                    start_h, start_w = (h - tcfg.crop_size[0]) // 2, (w - tcfg.crop_size[0]) // 2
+                    img = img[:, :, start_h:start_h + tcfg.crop_size[0], start_w:start_w + tcfg.crop_size[0]]
+                    mask = mask[:, start_h:start_h + tcfg.crop_size[0], start_w:start_w + tcfg.crop_size[0]]
                 
                 res = model(img)
                 pred = res['out'].argmax(dim=1)
                 conf = res['out'].softmax(dim=1).max(dim=1).values
                 
-            intersection, union, target = \
-                intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), cfg['nclass'], 255)
+            # intersection, union, target = \
+            #     utils.intersectionAndUnion(pred.cpu().numpy(), mask.cpu().numpy(), mcfg.num_classes, 255)
+            intersection, union, target = utils.intersectionAndUnion_gpu(pred, mask, mcfg.num_classes, 255)
 
-            reduced_intersection = torch.from_numpy(intersection).cuda()
-            reduced_union = torch.from_numpy(union).cuda()
-            reduced_target = torch.from_numpy(target).cuda()
+            # reduced_intersection = torch.from_numpy(intersection).cuda()
+            # reduced_union = torch.from_numpy(union).cuda()
+            # reduced_target = torch.from_numpy(target).cuda()
 
             if rank != 0:
-                dist.all_reduce(reduced_intersection)
-                dist.all_reduce(reduced_union)
-                dist.all_reduce(reduced_target)
+                dist.all_reduce(intersection)
+                dist.all_reduce(union)
+                dist.all_reduce(target)
 
-            intersection_meter.update(reduced_intersection.cpu().numpy())
-            union_meter.update(reduced_union.cpu().numpy())
+            intersection_meter.update(intersection.cpu().numpy())
+            union_meter.update(union.cpu().numpy())
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     mIOU = np.mean(iou_class) * 100.0

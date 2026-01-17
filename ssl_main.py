@@ -31,16 +31,16 @@ from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
 
-from configuration import TrainConfig, ModelConfig
+from configuration import DataConfig, TrainConfig, ModelConfig
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
 parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
-parser.add_argument('--labeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt"))
-parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt"))
-parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
+# parser.add_argument('--labeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt"))
+# parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt"))
+# parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
 
@@ -105,15 +105,15 @@ def main():
 
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
                                     mode='train_u',
-                                    id_path=args.unlabeled_id_path)
+                                    id_path=dcfg.unlabeled_id_path)
     
     label_train_set = SemiDataset(root=tcfg.data_root, 
                                   mode='train_l',
-                                  id_path=args.labeled_id_path, 
+                                  id_path=dcfg.labeled_id_path, 
                                   nsample=len(unlabel_train_set.ids))
     
     validation_set = SemiDataset(root=tcfg.data_root,
-                                 valid_path=args.val_id_path, 
+                                 valid_path=dcfg.val_id_path, 
                                  mode='val')
 
     aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
@@ -378,7 +378,7 @@ def main():
             eval_mode = 'original'
             
         torch.cuda.empty_cache()
-        res_val = evaluate(rank, model, validation_loader, "original", cfg)
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
         class_IOU = res_val['iou_class']
         
         # region  tensorboard
@@ -407,7 +407,7 @@ def main():
         img_l = img_l.detach().cpu().permute(0, 2, 3, 1).numpy()
         pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        gt = mask_l.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        gt = mask_l.detach().cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
                       image=img_l, 
                       pred=pred_mask_l,
@@ -449,6 +449,7 @@ def main():
 
 
 if __name__ == '__main__':
+    dcfg = DataConfig()
     tcfg = TrainConfig()
     mcfg = ModelConfig()
 

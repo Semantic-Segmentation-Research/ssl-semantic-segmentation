@@ -5,13 +5,22 @@ import os
 
 BASE_DIR = '/home/dev'
 
+# region - Data
+@dataclass
+class DataConfig:
+    labeled_id_path: str    = osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt")
+    unlabeled_id_path: str  = osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt")
+    val_id_path: str        = osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt")
+
+
+# region - Model
 @dataclass
 class ModelConfig:
     backbone:    str    = "resnet101"
     num_classes: int    = 19
 
 
-
+# region - Train
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
