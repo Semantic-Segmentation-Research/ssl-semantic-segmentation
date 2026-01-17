@@ -191,7 +191,7 @@ def main():
             img_u_w, img_u_s, ignore_mask, cutmix_box = aug_layer(img_u, mask_u_raw, mode='train_u')
             img_u_w_mix, img_u_s_mix, ignore_mask_mix, _ = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
             
-            if step == 1: break
+            # if step == 1: break
             start_event.record()
             
             # img_l, mask_l = img_l.cuda(), mask_l.cuda()
@@ -365,7 +365,7 @@ def main():
             
             
             if step % 50 == 0 and rank == 0:
-                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s | lr: {lr:5.4f}"
+                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s | lr: {lr:5.4f}"
                 loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
