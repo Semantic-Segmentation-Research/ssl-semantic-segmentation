@@ -42,7 +42,7 @@ class DeepLabV3Plus(nn.Module):
 
 
         if self.is_corr:
-            self.corr = Corr(nclass=mcfg.num_classes)
+            self.corr = CustomCorr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
                 nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
                 nn.BatchNorm2d(256),
@@ -173,6 +173,8 @@ class Corr(nn.Module):
         dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
         # feature = F.interpolate(enc_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
         
+        # gram matrix
+        
         f1 = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
         f2 = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
         dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
@@ -213,3 +215,89 @@ class Corr(nn.Module):
         norm_corr_map = rearrange(corr_map, '(n m) (h w) -> n m h w', n=n, m=m, h=h_out, w=w_out)
         
         return norm_corr_map
+    
+    
+class CustomCorr(nn.Module):
+    def __init__(self, nclass=21):
+        super(CustomCorr, self).__init__()
+        self.nclass = nclass
+        self.conv1 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
+        self.conv2 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
+
+    # Encoder output & Decoder output
+    def forward(self, enc_out, dec_out):
+        result_dict = {}
+        
+        enc_batch, enc_channel, enc_height, enc_width = enc_out.shape
+        dec_height, dec_width = dec_out.shape[-2:]
+        
+        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
+        # feature = F.interpolate(enc_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
+        
+        # gram matrix
+        features = self.conv1(enc_out)
+        feat_batch, feat_chaneel, feat_height, feat_width = features.shape
+        features = features.view(feat_batch, feat_chaneel, feat_height*feat_width)
+        gram = torch.bmm(features, features.transpose(1, 2))
+        gram = gram / (enc_channel * enc_height * enc_width)
+        gram_attn = F.softmax(gram, dim=-1)
+        
+        result_dict['binary_norm_corr_map'] = self.normalize_gram_map(gram_attn)
+        
+        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
+        refined_out = torch.matmul(gram_attn, dec_out_reshape) # (B, C, HW)
+        result_dict['corr_dec_out'] = refined_out.view(enc_batch, enc_channel, dec_height, dec_width)
+        
+        
+        f1 = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
+        f2 = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
+        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
+        
+        # 수식 4번
+        corr_map = torch.matmul(f1.transpose(1, 2), f2) / torch.sqrt(torch.tensor(f1.shape[1]).float())
+        corr_map = F.softmax(corr_map, dim=-1)
+        
+        corr_map_sample = self.sample(corr_map.detach(), enc_height, enc_width)
+        # 7번 수식에서 C_hat
+        # (8,128,48,48)
+        result_dict['binary_norm_corr_map'] = self.normalize_corr_map(corr_map_sample, enc_height, enc_width, dec_height, dec_width)
+        
+        # 5번 수식
+        # (8,19,48,48)
+        result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, corr_map), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        
+        return result_dict
+
+
+    def sample(self, corr_map, h_in, w_in):
+        index = torch.randint(0, h_in * w_in - 1, [128])
+        corr_map_sample = corr_map[:, index.long(), :]
+        return corr_map_sample
+    
+    
+    # region - region propagation
+    def normalize_gram_map(self, gram_map):
+        """
+        gram_map: (Batch, C, C) - 채널 간 상관관계 행렬
+        """
+        n, c, _ = gram_map.shape
+        
+        # 1. 공간 보간(F.interpolate)은 더 이상 필요 없음 (C x C 이므로)
+        # 대신 flatten 하여 정규화 준비
+        gram_flat = rearrange(gram_map, 'n c1 c2 -> n (c1 c2)')
+        
+        # 2. Min-Max Scaling (수식 7번 논리 그대로 적용)
+        min_val = torch.min(gram_flat, dim=1, keepdim=True)[0]
+        max_val = torch.max(gram_flat, dim=1, keepdim=True)[0]
+        
+        range_ = max_val - min_val + 1e-8 # 0 나누기 방지
+        temp_map = (gram_flat - min_val) / range_
+        
+        # 3. 임계값(Thresholding) 적용
+        # 0.5보다 큰 상관관계를 가진 채널 쌍만 1로 활성화
+        gram_mask = (temp_map > 0.5)
+        
+        # 4. 다시 (Batch, C, C) 형태로 복원
+        norm_gram_map = rearrange(gram_mask, 'n (c1 c2) -> n c1 c2', c1=c, c2=c)
+        
+        return norm_gram_map
