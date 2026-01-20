@@ -36,7 +36,7 @@ class TrainConfig:
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: tuple    = (384, 384)
+    crop_size: int      = 384
     
     @dataclass
     class LossConfig:

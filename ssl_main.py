@@ -20,7 +20,8 @@ import matplotlib
 matplotlib.use('agg')
 import yaml
 
-from dataset.semi import SemiDataset, GPUAugmentation
+# from dataset.semi import SemiDataset, GPUAugmentation
+from dataset.semi import SemiDataset
 from ssl_tensorboard import SSLTensorBoard
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
@@ -105,18 +106,21 @@ def main():
 
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
                                     mode='train_u',
+                                    size=tcfg.crop_size,
                                     id_path=dcfg.unlabeled_id_path)
     
     label_train_set = SemiDataset(root=tcfg.data_root, 
                                   mode='train_l',
-                                  id_path=dcfg.labeled_id_path, 
+                                  id_path=dcfg.labeled_id_path,
+                                  size=tcfg.crop_size, 
                                   nsample=len(unlabel_train_set.ids))
     
     validation_set = SemiDataset(root=tcfg.data_root,
-                                 valid_path=dcfg.val_id_path, 
-                                 mode='val')
+                                 mode='val',
+                                 size=tcfg.crop_size,
+                                 valid_path=dcfg.val_id_path) 
 
-    aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
+    # aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
     use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
     
     trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
@@ -176,31 +180,31 @@ def main():
         dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
 
         # region step 시작
-        # for step, ((img_l, mask_l, l_image_path),
-        #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
-        #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
         for step, ((img_l, mask_l, l_image_path),
-                   (img_u, mask_u_raw, u_image_path),
-                   (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
+                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
+                   (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
+        # for step, ((img_l, mask_l, l_image_path),
+        #            (img_u, mask_u_raw, u_image_path),
+        #            (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
             
-            img_l, mask_l = img_l.cuda(local_rank), mask_l.cuda(local_rank)
-            img_u, mask_u_raw = img_u.cuda(local_rank), mask_u_raw.cuda(local_rank)
-            img_u_mix, mask_u_mix_raw = img_u_mix.cuda(local_rank), mask_u_mix_raw.cuda(local_rank)
+            # img_l, mask_l = img_l.cuda(local_rank), mask_l.cuda(local_rank)
+            # img_u, mask_u_raw = img_u.cuda(local_rank), mask_u_raw.cuda(local_rank)
+            # img_u_mix, mask_u_mix_raw = img_u_mix.cuda(local_rank), mask_u_mix_raw.cuda(local_rank)
 
-            img_l, mask_l = aug_layer(img_l, mask_l, mode='train_l')
-            img_u_w, img_u_s, ignore_mask, cutmix_box = aug_layer(img_u, mask_u_raw, mode='train_u')
-            img_u_w_mix, img_u_s_mix, ignore_mask_mix, _ = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
+            # img_l, mask_l = aug_layer(img_l, mask_l, mode='train_l')
+            # img_u_w, img_u_s, ignore_mask, cutmix_box = aug_layer(img_u, mask_u_raw, mode='train_u')
+            # img_u_w_mix, img_u_s_mix, ignore_mask_mix, _ = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
             
             # if step == 1: break
             start_event.record()
             
-            # img_l, mask_l = img_l.cuda(), mask_l.cuda()
-            # img_u_w = img_u_w.cuda()
-            # img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
-            # cutmix_box = cutmix_box.cuda()
-            # img_u_w_mix = img_u_w_mix.cuda()
-            # img_u_s_mix = img_u_s_mix.cuda()
-            # ignore_mask_mix = ignore_mask_mix.cuda()
+            img_l, mask_l = img_l.cuda(), mask_l.cuda()
+            img_u_w = img_u_w.cuda()
+            img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
+            cutmix_box = cutmix_box.cuda()
+            img_u_w_mix = img_u_w_mix.cuda()
+            img_u_s_mix = img_u_s_mix.cuda()
+            ignore_mask_mix = ignore_mask_mix.cuda()
             
             
             with torch.no_grad():
@@ -209,10 +213,10 @@ def main():
                 pred_u_w_mix = res_u_w_mix['out'].detach() # weak aug 데이터의 output, 예측
                 conf_u_w_mix = pred_u_w_mix.softmax(dim=1).max(dim=1)[0] # classes채널에서의 softmax 후 최대확률
                 mask_u_w_mix = pred_u_w_mix.argmax(dim=1) # pseudo label
-                # img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
-                #     img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
-                img_u_s[cutmix_box.expand(img_u_s.shape) == 1] = \
-                    img_u_s_mix[cutmix_box.expand(img_u_s.shape) == 1]
+                img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
+                    img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
+                # img_u_s[cutmix_box.expand(img_u_s.shape) == 1] = \
+                #     img_u_s_mix[cutmix_box.expand(img_u_s.shape) == 1]
                     
             
             model.train()
@@ -364,7 +368,7 @@ def main():
             time_left = str(datetime.timedelta(seconds=int(time_left)))
             
             
-            if step % 50 == 0 and rank == 0:
+            if step % 10 == 0 and rank == 0:
                 hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s | lr: {lr:5.4f}"
                 loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
@@ -378,7 +382,8 @@ def main():
             eval_mode = 'original'
             
         torch.cuda.empty_cache()
-        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
+        # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, eval_mode="original")
         class_IOU = res_val['iou_class']
         
         # region  tensorboard
