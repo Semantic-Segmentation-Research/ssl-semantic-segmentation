@@ -42,7 +42,8 @@ class DeepLabV3Plus(nn.Module):
 
 
         if self.is_corr:
-            self.corr = CustomCorr(nclass=mcfg.num_classes)
+            # self.corr = CustomCorr(nclass=mcfg.num_classes)
+            self.corr = Corr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
                 nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
                 nn.BatchNorm2d(256),
@@ -156,6 +157,7 @@ class ASPPModule(nn.Module):
         return self.project(y)
 
 
+# region - Corr
 class Corr(nn.Module):
     def __init__(self, nclass=21):
         super(Corr, self).__init__()
@@ -172,8 +174,6 @@ class Corr(nn.Module):
         
         dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
         # feature = F.interpolate(enc_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
-        
-        # gram matrix
         
         f1 = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
         f2 = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
@@ -217,54 +217,53 @@ class Corr(nn.Module):
         return norm_corr_map
     
     
-class CustomCorr(nn.Module):
+class CrossCovarianceAtt(nn.Module):
     def __init__(self, nclass=21):
-        super(CustomCorr, self).__init__()
+        super(CrossCovarianceAtt, self).__init__()
+    
         self.nclass = nclass
-        self.conv1 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
-        self.conv2 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
-
+    
+        self.conv1 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
+        self.conv2 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
+        self.conv3 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
+    
+        self.dwconv = nn.Conv2d(nclass, nclass, kernel_size=3, padding=1, groups=nclass)
+    
+    
     # Encoder output & Decoder output
     def forward(self, enc_out, dec_out):
         result_dict = {}
         
         enc_batch, enc_channel, enc_height, enc_width = enc_out.shape
-        dec_height, dec_width = dec_out.shape[-2:]
+        q = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
+        k = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
+        v = rearrange(self.conv3(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
         
-        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
-        # feature = F.interpolate(enc_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
+        # 2. L2 Normalization (채널 간 유사도 계산을 위해 필수)
+        q = F.normalize(q, p=2, dim=-1) # 각 채널 벡터의 norm을 1로
+        k = F.normalize(k, p=2, dim=-1)
         
-        # gram matrix
-        features = self.conv1(enc_out)
-        feat_batch, feat_chaneel, feat_height, feat_width = features.shape
-        features = features.view(feat_batch, feat_chaneel, feat_height*feat_width)
-        gram = torch.bmm(features, features.transpose(1, 2))
-        gram = gram / (enc_channel * enc_height * enc_width)
-        gram_attn = F.softmax(gram, dim=-1)
+        # 3. XCA 연산 (Gram Matrix 형태: C x C)
+        # (n, c, N) @ (n, N, c) -> (n, c, c)
+        attn = torch.matmul(q, k.transpose(1, 2))
         
-        result_dict['binary_norm_corr_map'] = self.normalize_gram_map(gram_attn)
+        # 4. Softmax 및 적용
+        attn = F.softmax(attn, dim=-1)
+        xca = torch.matmul(attn, v) # (n, c, c) @ (n, c, N) -> (n, c, N)
+
+        # 5. Reshape back
+        xca = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        x_lpi = xca + self.dwconv(xca)
         
-        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
-        refined_out = torch.matmul(gram_attn, dec_out_reshape) # (B, C, HW)
-        result_dict['corr_dec_out'] = refined_out.view(enc_batch, enc_channel, dec_height, dec_width)
-        
-        
-        f1 = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
-        f2 = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
-        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
-        
-        # 수식 4번
-        corr_map = torch.matmul(f1.transpose(1, 2), f2) / torch.sqrt(torch.tensor(f1.shape[1]).float())
-        corr_map = F.softmax(corr_map, dim=-1)
-        
-        corr_map_sample = self.sample(corr_map.detach(), enc_height, enc_width)
         # 7번 수식에서 C_hat
         # (8,128,48,48)
-        result_dict['binary_norm_corr_map'] = self.normalize_corr_map(corr_map_sample, enc_height, enc_width, dec_height, dec_width)
+        result_dict['binary_norm_corr_map'] = self.normalize_corr_map(x_lpi, enc_height, enc_width, dec_height, dec_width)
         
         # 5번 수식
         # (8,19,48,48)
-        result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, corr_map), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
+        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
+        result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, x_lpi), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         
         return result_dict
 

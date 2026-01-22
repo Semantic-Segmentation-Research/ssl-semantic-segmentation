@@ -253,6 +253,7 @@ def main():
             cutmix_box_map = (cutmix_box == 1)
             cutmix_box_map = cutmix_box_map.squeeze(dim=1)
             
+            # 추론을 통해 나온 Pseudo Label을 그대로 옮김. 
             mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
             mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
             conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_mix[cutmix_box_map]
@@ -280,6 +281,7 @@ def main():
             # segments : encoder에서의 유사도와 모델 예측 confidence를 곱해서 더더욱 중요한 부분만 살리기 위함
             
             ########### 9번 수식 전체 ############### region propag
+            # 신뢰도가 낮은 예측 영역 (mask_u_w_cutmixed1)을 주변의 지표를 활용해 정해(refinement)
             for img_idx in range(b_sample):
                 for segment_idx in range(c_sample):
 
@@ -291,6 +293,7 @@ def main():
                     unique_cls, count = torch.unique(mask_u_w_cutmixed1[img_idx][segment==1], return_counts=True)
 
                     if torch.max(count) / torch.sum(count) > thresh_global:
+                        # 신뢰할 수 있는 영역안에 있는 클래스들 중 가장 많이 나타나는 클래스를 찾음. 
                         top_class = unique_cls[torch.argmax(count)] # 8번수식 k*
                         mask_u_w_cutmixed1[img_idx][segment_ori==1] = top_class # 10번 수식
                         conf_filter_u_w_without_cutmix[img_idx] = conf_filter_u_w_without_cutmix[img_idx] | segment_ori

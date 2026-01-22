@@ -85,9 +85,10 @@ class SemiDataset(Dataset):
         
         # -------------------- Strong Augmentation --------------------
         if random.random() < 0.8:
-            img_s = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_s) # 색변환 80%확률 strong aug에 적용
-        img_s = transforms.RandomGrayscale(p=0.2)(img_s) # 회색조 20% 확률로 추가
-        img_s = blur(img_s, p=0.5) # 블러처리 50%확률
+            img_s = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_s)
+        img_s = transforms.RandomGrayscale(p=0.2)(img_s)
+        img_s = blur(img_s, p=0.5)
+        # Cutmix 할 영역을 가져옴. 
         cutmix_box = obtain_cutmix_box(img_s.size[0], p=0.5)
 
         ignore_mask = Image.fromarray(np.zeros((mask.size[1], mask.size[0]))) # mask사이즈의 0으로 된 array를 Pil image로 재구성
