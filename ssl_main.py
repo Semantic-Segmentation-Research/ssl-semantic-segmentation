@@ -386,7 +386,7 @@ def main():
             
         torch.cuda.empty_cache()
         # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
-        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, eval_mode="original")
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode='original')
         class_IOU = res_val['iou_class']
         
         # region  tensorboard
@@ -415,7 +415,10 @@ def main():
         img_l = img_l.detach().cpu().permute(0, 2, 3, 1).numpy()
         pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        gt = mask_l.detach().cpu().permute(0, 2, 3, 1).numpy()
+        if mask_l.dim() == 4:
+            gt = mask_l.detach().cpu().permute(0, 2, 3, 1).numpy()
+        elif mask_l.dim() == 3:
+            gt = mask_l.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
                       image=img_l, 
                       pred=pred_mask_l,

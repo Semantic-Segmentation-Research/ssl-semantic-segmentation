@@ -24,8 +24,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "deeplabv3plus_resnet101"
-    # model_name: str     = "test"
+    model_name: str     = "deeplabv3plus_resnet101_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
@@ -36,7 +35,7 @@ class TrainConfig:
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 384
+    crop_size: int      = 416
     
     @dataclass
     class LossConfig:

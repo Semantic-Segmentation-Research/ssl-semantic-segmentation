@@ -42,8 +42,8 @@ class DeepLabV3Plus(nn.Module):
 
 
         if self.is_corr:
-            # self.corr = CustomCorr(nclass=mcfg.num_classes)
-            self.corr = Corr(nclass=mcfg.num_classes)
+            self.corr = CrossCovarianceAtt(nclass=mcfg.num_classes)
+            # self.corr = Corr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
                 nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
                 nn.BatchNorm2d(256),
@@ -182,12 +182,12 @@ class Corr(nn.Module):
         # 수식 4번
         corr_map = torch.matmul(f1.transpose(1, 2), f2) / torch.sqrt(torch.tensor(f1.shape[1]).float())
         corr_map = F.softmax(corr_map, dim=-1)
-        
+        # (8, 128, 2304)
         corr_map_sample = self.sample(corr_map.detach(), enc_height, enc_width)
-        # 7번 수식에서 C_hat
+        # 7번 수식에서 C_hat (8, 128, 384, 384)
         result_dict['binary_norm_corr_map'] = self.normalize_corr_map(corr_map_sample, enc_height, enc_width, dec_height, dec_width)
         
-        # 5번 수식
+        # 5번 수식 (8, 19, 48, 48)
         result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, corr_map), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         
         return result_dict
@@ -222,48 +222,49 @@ class CrossCovarianceAtt(nn.Module):
         super(CrossCovarianceAtt, self).__init__()
     
         self.nclass = nclass
-    
-        self.conv1 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
-        self.conv2 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
-        self.conv3 = nn.Conv2d(256, nclass, kernel_size=1, stride=1, padding=0, bias=True)
-    
-        self.dwconv = nn.Conv2d(nclass, nclass, kernel_size=3, padding=1, groups=nclass)
-    
+        self.in_ch = 256
+        self.out_ch = 128
+        
+        self.qkv_conv = nn.Conv2d(self.in_ch, self.out_ch * 3, kernel_size=1, stride=1, padding=0, bias=True)
+        self.dwconv = nn.Conv2d(self.out_ch, self.out_ch, kernel_size=3, padding=1, groups=self.out_ch)
+        self.proj   = nn.Conv2d(self.out_ch, nclass, kernel_size=3, padding=1)
     
     # Encoder output & Decoder output
     def forward(self, enc_out, dec_out):
         result_dict = {}
         
-        enc_batch, enc_channel, enc_height, enc_width = enc_out.shape
-        q = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
-        k = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
-        v = rearrange(self.conv3(enc_out), 'n c h w -> n c (h w)') # (n, c, N)
+        enc_batch, enc_ch, enc_height, enc_width = enc_out.shape
+        dec_height, dec_width = dec_out.shape[-2:]
         
-        # 2. L2 Normalization (채널 간 유사도 계산을 위해 필수)
-        q = F.normalize(q, p=2, dim=-1) # 각 채널 벡터의 norm을 1로
+        qkv = self.qkv_conv(enc_out).flatten(2)
+        q, k, v= qkv.chunk(3, dim=1)
+        
+        # q = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
+        # k = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
+        # v = rearrange(self.conv3(enc_out), 'n c h w -> n c (h w)')
+        
+        q = F.normalize(q, p=2, dim=-1)
         k = F.normalize(k, p=2, dim=-1)
         
-        # 3. XCA 연산 (Gram Matrix 형태: C x C)
-        # (n, c, N) @ (n, N, c) -> (n, c, c)
-        attn = torch.matmul(q, k.transpose(1, 2))
+        # attn = torch.matmul(q, k.transpose(1, 2))
+        attn = torch.bmm(q, k.transpose(1, 2))
         
-        # 4. Softmax 및 적용
         attn = F.softmax(attn, dim=-1)
-        xca = torch.matmul(attn, v) # (n, c, c) @ (n, c, N) -> (n, c, N)
+        xca = torch.bmm(attn, v)
 
-        # 5. Reshape back
-        xca = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        # xca = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        xca = xca.reshape(enc_batch, self.out_ch, enc_height, enc_width)
         x_lpi = xca + self.dwconv(xca)
         
-        # 7번 수식에서 C_hat
-        # (8,128,48,48)
-        result_dict['binary_norm_corr_map'] = self.normalize_corr_map(x_lpi, enc_height, enc_width, dec_height, dec_width)
+        # 7번 수식에서 C_hat (8, 128, 384, 384)
+        x_lpi_reshape = rearrange(x_lpi, 'n c h w -> n c (h w)')
+        result_dict['binary_norm_corr_map'] = self.normalize_xca_map(x_lpi_reshape, enc_height, enc_width, dec_height, dec_width)
         
+        x_lpi_proj = self.proj(x_lpi)
         # 5번 수식
         # (8,19,48,48)
-        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
-        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
-        result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, x_lpi), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        result_dict['corr_dec_out'] = x_lpi_proj
+        # result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, x_lpi), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         
         return result_dict
 
@@ -274,29 +275,18 @@ class CrossCovarianceAtt(nn.Module):
         return corr_map_sample
     
     
-    # region - region propagation
-    def normalize_gram_map(self, gram_map):
-        """
-        gram_map: (Batch, C, C) - 채널 간 상관관계 행렬
-        """
-        n, c, _ = gram_map.shape
+    def normalize_xca_map(self, corr_map, h_in, w_in, h_out, w_out):
+        n, m = corr_map.shape[:2]
         
-        # 1. 공간 보간(F.interpolate)은 더 이상 필요 없음 (C x C 이므로)
-        # 대신 flatten 하여 정규화 준비
-        gram_flat = rearrange(gram_map, 'n c1 c2 -> n (c1 c2)')
+        corr_map = rearrange(corr_map, 'n m (h w) -> (n m) 1 h w', h=h_in, w=w_in)
+        corr_map = F.interpolate(corr_map, (h_out, w_out), mode='bilinear', align_corners=True)
+
+        corr_map = rearrange(corr_map, '(n m) 1 h w -> (n m) (h w)', n=n, m=m)
+        # Min - Max scaling (normalization), 수식 7번
+        range_ = torch.max(corr_map, dim=1, keepdim=True)[0] - torch.min(corr_map, dim=1, keepdim=True)[0]
+        temp_map = ((- torch.min(corr_map, dim=1, keepdim=True)[0]) + corr_map) / range_
+        corr_map = (temp_map > 0.5)
         
-        # 2. Min-Max Scaling (수식 7번 논리 그대로 적용)
-        min_val = torch.min(gram_flat, dim=1, keepdim=True)[0]
-        max_val = torch.max(gram_flat, dim=1, keepdim=True)[0]
+        norm_corr_map = rearrange(corr_map, '(n m) (h w) -> n m h w', n=n, m=m, h=h_out, w=w_out)
         
-        range_ = max_val - min_val + 1e-8 # 0 나누기 방지
-        temp_map = (gram_flat - min_val) / range_
-        
-        # 3. 임계값(Thresholding) 적용
-        # 0.5보다 큰 상관관계를 가진 채널 쌍만 1로 활성화
-        gram_mask = (temp_map > 0.5)
-        
-        # 4. 다시 (Batch, C, C) 형태로 복원
-        norm_gram_map = rearrange(gram_mask, 'n (c1 c2) -> n c1 c2', c1=c, c2=c)
-        
-        return norm_gram_map
+        return norm_corr_map
