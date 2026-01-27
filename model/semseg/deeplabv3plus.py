@@ -6,14 +6,17 @@ from torch import nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
+import os.path as osp
 
-
+# region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
     def __init__(self, cfg, mcfg, pretrained_path):
         super(DeepLabV3Plus, self).__init__()
         self.is_corr = True
-        self.pretrained_path = pretrained_path
-
+        # self.pretrained_path = pretrained_path
+        if not osp.exists(pretrained_path): 
+            pretrained_path = False
+            
         if 'resnet' in mcfg.backbone:
             backbone = resnet.__dict__[mcfg.backbone]
             self.backbone = backbone(pretrained_path,
@@ -55,8 +58,9 @@ class DeepLabV3Plus(nn.Module):
         result_dict = {}
         h, w = x.shape[-2:]
 
-        feats = self.backbone.base_forward(x)
-        c1, c4 = feats[0], feats[-1]
+        c1, c2, c3, c4 = self.backbone.base_forward(x)
+        # feats = self.backbone.base_forward(x)
+        # c1, c4 = feats[0], feats[-1]
 
         if need_fp:
             feats_decode = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))))
@@ -83,6 +87,7 @@ class DeepLabV3Plus(nn.Module):
         feats_decode = self._decode(c1, c4)
         out = self.classifier(feats_decode)
         out = F.interpolate(out, size=(h, w), mode="bilinear", align_corners=True)
+        
         if use_corr:
             proj_feats = self.proj(c4)
             corr_out_dict = self.corr(proj_feats, out)
@@ -92,8 +97,11 @@ class DeepLabV3Plus(nn.Module):
             corr_out = corr_out_dict['corr_dec_out']
             corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
             result_dict['corr_out'] = corr_out
+        
         result_dict['out'] = out
+        
         return result_dict
+
 
     def _decode(self, c1, c4):
         c4 = self.head(c4)
@@ -216,7 +224,9 @@ class Corr(nn.Module):
         
         return norm_corr_map
     
-    
+
+
+# region - XCA
 class CrossCovarianceAtt(nn.Module):
     def __init__(self, nclass=21):
         super(CrossCovarianceAtt, self).__init__()
@@ -269,12 +279,6 @@ class CrossCovarianceAtt(nn.Module):
         return result_dict
 
 
-    def sample(self, corr_map, h_in, w_in):
-        index = torch.randint(0, h_in * w_in - 1, [128])
-        corr_map_sample = corr_map[:, index.long(), :]
-        return corr_map_sample
-    
-    
     def normalize_xca_map(self, corr_map, h_in, w_in, h_out, w_out):
         n, m = corr_map.shape[:2]
         

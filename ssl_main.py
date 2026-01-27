@@ -39,9 +39,6 @@ from configuration import DataConfig, TrainConfig, ModelConfig
 
 parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
 parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
-# parser.add_argument('--labeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt"))
-# parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt"))
-# parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
 
@@ -209,15 +206,17 @@ def main():
             
             with torch.no_grad():
                 model.eval()
-                res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False) # unlabeled weak aug 모델학습
-                pred_u_w_mix = res_u_w_mix['out'].detach() # weak aug 데이터의 output, 예측
-                conf_u_w_mix = pred_u_w_mix.softmax(dim=1).max(dim=1)[0] # classes채널에서의 softmax 후 최대확률
-                mask_u_w_mix = pred_u_w_mix.argmax(dim=1) # pseudo label
+                res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False)
+                logit_u_w_mix = res_u_w_mix['out'].detach()
+                # logit은 모델의 확신 점수이다. 
+                conf_u_w_mix = logit_u_w_mix.softmax(dim=1).max(dim=1)[0]
+                mask_u_w_mix = logit_u_w_mix.argmax(dim=1) # pseudo label
                 img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
                     img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
                 # img_u_s[cutmix_box.expand(img_u_s.shape) == 1] = \
                 #     img_u_s_mix[cutmix_box.expand(img_u_s.shape) == 1]
                     
+            # a = (img_u_s[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
             
             model.train()
             label_batch_size, unlabel_batch_size = img_l.shape[0], img_u_w.shape[0]

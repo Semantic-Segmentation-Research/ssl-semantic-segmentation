@@ -75,13 +75,17 @@ class SemiDataset(Dataset):
         img, mask = crop(img, mask, self.size, ignore_value) # 801-w, 801-h 를 하여 패딩설정후, 좌우를 0으로 채움
         img, mask = hflip(img, mask, p=0.5)
 
+        img_w, mask_w = normalize(img, mask) 
         if self.mode == 'train_l':
-            image, mask = normalize(img, mask) 
-            return image, mask, image_path
+            return img_w, mask_w, image_path
+        # if self.mode == 'train_l':
+        #     image, mask = normalize(img, mask) 
+        #     return image, mask, image_path
         # ---------------------------------------------------------
         
-        img_w, img_s = deepcopy(img), deepcopy(img)
-        img_w = normalize(img_w)
+        img_s = deepcopy(img)
+        # img_w, img_s = deepcopy(img), deepcopy(img)
+        # img_w = normalize(img_w)
         
         # -------------------- Strong Augmentation --------------------
         if random.random() < 0.8:

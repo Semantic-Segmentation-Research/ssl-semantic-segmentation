@@ -142,10 +142,10 @@ class ResNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        c1 = self.layer1(x)
-        c2 = self.layer2(c1)
-        c3 = self.layer3(c2)
-        c4 = self.layer4(c3)
+        c1 = self.layer1(x) # H/4, W/4
+        c2 = self.layer2(c1) # H/8, W/8
+        c3 = self.layer3(c2) # H/8, W/8
+        c4 = self.layer4(c3) # H/8, W/8
 
         return c1, c2, c3, c4
 

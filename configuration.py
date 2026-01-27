@@ -16,7 +16,7 @@ class DataConfig:
 # region - Model
 @dataclass
 class ModelConfig:
-    backbone:    str    = "resnet101"
+    backbone:    str    = "resnet50"
     num_classes: int    = 19
 
 
@@ -24,7 +24,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "deeplabv3plus_resnet101_xca"
+    model_name: str     = "deeplabv3plus_resnet50_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
