@@ -5,7 +5,7 @@ codes_dir="/home/dev/experiments/codes"
 logs_dir="/home/dev/experiments/logs"
 models_dir="/home/dev/experiments/models"
 
-model_name="deeplabv3plus_resnet101_xca"
+model_name="deeplabv3plus_resnet50_xca"
 rm -rf ${backups_dir}/${model_name}
 rm -rf ${codes_dir}/${model_name}
 rm -rf ${logs_dir}/${model_name}

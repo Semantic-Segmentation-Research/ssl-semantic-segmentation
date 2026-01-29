@@ -10,8 +10,9 @@ import os.path as osp
 
 # region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, cfg, mcfg, pretrained_path):
+    def __init__(self, tcfg, mcfg, pretrained_path):
         super(DeepLabV3Plus, self).__init__()
+        self.tcfg = tcfg
         self.is_corr = True
         # self.pretrained_path = pretrained_path
         if not osp.exists(pretrained_path): 
@@ -20,8 +21,8 @@ class DeepLabV3Plus(nn.Module):
         if 'resnet' in mcfg.backbone:
             backbone = resnet.__dict__[mcfg.backbone]
             self.backbone = backbone(pretrained_path,
-                                     multi_grid=cfg['multi_grid'],
-                                     replace_stride_with_dilation=cfg['replace_stride_with_dilation'])
+                                     multi_grid=mcfg.multi_grid,
+                                     replace_stride_with_dilation=mcfg.replace_stride_with_dilation)
         else:
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
@@ -29,7 +30,7 @@ class DeepLabV3Plus(nn.Module):
         low_channels = 256
         high_channels = 2048
 
-        self.head = ASPPModule(high_channels, cfg['dilations'])
+        self.aspp = ASPPModule(high_channels, mcfg.dilations)
 
         self.reduce = nn.Sequential(nn.Conv2d(low_channels, 48, 1, bias=False),
                                     nn.BatchNorm2d(48),
@@ -54,66 +55,65 @@ class DeepLabV3Plus(nn.Module):
                 nn.Dropout2d(0.1),
             )
 
-    def forward(self, x, need_fp=False, use_corr=False):
+    # region forward
+    def forward(self, x, mode='train'):
         result_dict = {}
-        h, w = x.shape[-2:]
+        # b, _, input_height, input_width = x.shape
 
         c1, c2, c3, c4 = self.backbone.base_forward(x)
-        # feats = self.backbone.base_forward(x)
-        # c1, c4 = feats[0], feats[-1]
-
-        if need_fp:
-            feats_decode = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))))
-            outs = self.classifier(feats_decode)
-            outs = F.interpolate(outs, size=(h, w), mode="bilinear", align_corners=True)
+        if mode =='train':
+            c1, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c4, c4_u_s = torch.split(c4, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
+            out_u_s = self._decode(c1_u_s, c4_u_s)
+            result_dict['out_u_s'] = out_u_s
+            
+            outs = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))))
             out, out_fp = outs.chunk(2)
-            if use_corr:
-                proj_feats = self.proj(c4) # 채널수 줄이는 연산
-                corr_out_dict = self.corr(proj_feats, out)
                 
-                result_dict['binary_norm_corr_map'] = corr_out_dict['binary_norm_corr_map']
-                
-                corr_out = corr_out_dict['corr_dec_out']
-                corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
-                
-                result_dict['corr_out'] = corr_out
+            binary_norm_corr_map, corr_out = self._feature_corr(enc_out=c4, dec_out=out, aug_type='weak')
             
-            result_dict['out'] = out
+            result_dict['binary_norm_corr_map'] = binary_norm_corr_map
+            result_dict['corr_out'] = corr_out
             result_dict['out_fp'] = out_fp
 
-            return result_dict
+            corr_out_u_s = self._feature_corr(enc_out=c4_u_s, dec_out=out_u_s, aug_type='strong')
+            result_dict['corr_out_u_s'] = corr_out_u_s
+            
+        elif mode == 'test':
+            out = self._decode(c1, c4)
 
-        feats_decode = self._decode(c1, c4)
-        out = self.classifier(feats_decode)
-        out = F.interpolate(out, size=(h, w), mode="bilinear", align_corners=True)
-        
-        if use_corr:
-            proj_feats = self.proj(c4)
-            corr_out_dict = self.corr(proj_feats, out)
-            
-            result_dict['binary_norm_corr_map'] = corr_out_dict['binary_norm_corr_map']
-            
-            corr_out = corr_out_dict['corr_dec_out']
-            corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
-            result_dict['corr_out'] = corr_out
-        
         result_dict['out'] = out
         
         return result_dict
 
 
     def _decode(self, c1, c4):
-        c4 = self.head(c4)
+        c4 = self.aspp(c4)
         c4 = F.interpolate(c4, size=c1.shape[-2:], mode="bilinear", align_corners=True)
 
         c1 = self.reduce(c1)
 
         feature = torch.cat([c1, c4], dim=1)
         feature = self.fuse(feature)
-
-        return feature
-
+        
+        out = self.classifier(feature)
+        out = F.interpolate(out, (self.tcfg.crop_size, self.tcfg.crop_size), mode="bilinear", align_corners=True)
+        
+        return out
+    
+    def _feature_corr(self, enc_out, dec_out, aug_type='weak'):
+        proj_feats = self.proj(enc_out)
+        corr_out_dict = self.corr(proj_feats, dec_out, aug_type)
+        
+        corr_out = corr_out_dict['corr_dec_out']
+        corr_out = F.interpolate(corr_out, size=(self.tcfg.crop_size, self.tcfg.crop_size), mode="bilinear", align_corners=True)
+        
+        if aug_type == 'weak':
+            return corr_out_dict['binary_norm_corr_map'], corr_out
+        else:
+            return corr_out
+            
 
 def ASPPConv(in_channels, out_channels, atrous_rate):
     block = nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, padding=atrous_rate,
@@ -123,6 +123,7 @@ def ASPPConv(in_channels, out_channels, atrous_rate):
     return block
 
 
+# region - ASPPPooling
 class ASPPPooling(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ASPPPooling, self).__init__()
@@ -137,6 +138,7 @@ class ASPPPooling(nn.Module):
         return F.interpolate(pool, (h, w), mode="bilinear", align_corners=True)
 
 
+# region - ASPPModule
 class ASPPModule(nn.Module):
     def __init__(self, in_channels, atrous_rates):
         super(ASPPModule, self).__init__()
@@ -190,7 +192,7 @@ class Corr(nn.Module):
         # 수식 4번
         corr_map = torch.matmul(f1.transpose(1, 2), f2) / torch.sqrt(torch.tensor(f1.shape[1]).float())
         corr_map = F.softmax(corr_map, dim=-1)
-        # (8, 128, 2304)
+        # corr_map_sample: (8, 128, 2304)
         corr_map_sample = self.sample(corr_map.detach(), enc_height, enc_width)
         # 7번 수식에서 C_hat (8, 128, 384, 384)
         result_dict['binary_norm_corr_map'] = self.normalize_corr_map(corr_map_sample, enc_height, enc_width, dec_height, dec_width)
@@ -238,12 +240,13 @@ class CrossCovarianceAtt(nn.Module):
         self.qkv_conv = nn.Conv2d(self.in_ch, self.out_ch * 3, kernel_size=1, stride=1, padding=0, bias=True)
         self.dwconv = nn.Conv2d(self.out_ch, self.out_ch, kernel_size=3, padding=1, groups=self.out_ch)
         self.proj   = nn.Conv2d(self.out_ch, nclass, kernel_size=3, padding=1)
-    
+        
+        
     # Encoder output & Decoder output
-    def forward(self, enc_out, dec_out):
+    def forward(self, enc_out, dec_out, aug_type='weak'):
         result_dict = {}
         
-        enc_batch, enc_ch, enc_height, enc_width = enc_out.shape
+        enc_batch, _, enc_height, enc_width = enc_out.shape
         dec_height, dec_width = dec_out.shape[-2:]
         
         qkv = self.qkv_conv(enc_out).flatten(2)
@@ -258,23 +261,24 @@ class CrossCovarianceAtt(nn.Module):
         
         # attn = torch.matmul(q, k.transpose(1, 2))
         attn = torch.bmm(q, k.transpose(1, 2))
-        
         attn = F.softmax(attn, dim=-1)
+        # xca: [B*2, C, N]
         xca = torch.bmm(attn, v)
-
-        # xca = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
-        xca = xca.reshape(enc_batch, self.out_ch, enc_height, enc_width)
-        x_lpi = xca + self.dwconv(xca)
+        xca_conf = F.softmax(xca, dim=-1)
+        
+        if aug_type =='weak':
+            result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca_conf, enc_height, enc_width, dec_height, dec_width)
+        
+        xca_reshsape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        
+        x_lp = xca_reshsape + self.dwconv(xca_reshsape)
+        x_lp = self.proj(x_lp)
         
         # 7번 수식에서 C_hat (8, 128, 384, 384)
-        x_lpi_reshape = rearrange(x_lpi, 'n c h w -> n c (h w)')
-        result_dict['binary_norm_corr_map'] = self.normalize_xca_map(x_lpi_reshape, enc_height, enc_width, dec_height, dec_width)
-        
-        x_lpi_proj = self.proj(x_lpi)
+        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
         # 5번 수식
         # (8,19,48,48)
-        result_dict['corr_dec_out'] = x_lpi_proj
-        # result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, x_lpi), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        result_dict['corr_dec_out'] = dec_out * x_lp
         
         return result_dict
 

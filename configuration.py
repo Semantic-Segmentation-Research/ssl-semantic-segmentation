@@ -18,7 +18,10 @@ class DataConfig:
 class ModelConfig:
     backbone:    str    = "resnet50"
     num_classes: int    = 19
-
+    multi_grid: bool    = False
+    dilations: list     = field(default_factory=lambda: [12, 24, 36])
+    replace_stride_with_dilation: list = field(default_factory=lambda: [False, True, True])
+    
 
 # region - Train
 @dataclass
@@ -35,7 +38,7 @@ class TrainConfig:
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 416
+    crop_size: int      = 512
     
     @dataclass
     class LossConfig:

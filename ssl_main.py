@@ -74,7 +74,7 @@ def main():
 
     init_seeds(0, False)
 
-    model = DeepLabV3Plus(cfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
+    model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
 
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
@@ -171,74 +171,72 @@ def main():
         total_mask_ratio = 0.0
         
         if use_ddp:
-            label_train_loader.sampler.set_epoch(epoch) # epoch마다 shuffle seed 바꾸기 위한 작업
+            label_train_loader.sampler.set_epoch(epoch)
             unlabel_train_loader.sampler.set_epoch(epoch)
         
-        dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
-
+        # dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
         # region step 시작
-        for step, ((img_l, mask_l, l_image_path),
-                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
-                   (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
         # for step, ((img_l, mask_l, l_image_path),
-        #            (img_u, mask_u_raw, u_image_path),
-        #            (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
-            
-            # img_l, mask_l = img_l.cuda(local_rank), mask_l.cuda(local_rank)
-            # img_u, mask_u_raw = img_u.cuda(local_rank), mask_u_raw.cuda(local_rank)
-            # img_u_mix, mask_u_mix_raw = img_u_mix.cuda(local_rank), mask_u_mix_raw.cuda(local_rank)
+        #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
+        #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
+        
+        dataloader = zip(label_train_loader, unlabel_train_loader)
+        for step, ((img_l, mask_l, l_image_path),
+                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
-            # img_l, mask_l = aug_layer(img_l, mask_l, mode='train_l')
-            # img_u_w, img_u_s, ignore_mask, cutmix_box = aug_layer(img_u, mask_u_raw, mode='train_u')
-            # img_u_w_mix, img_u_s_mix, ignore_mask_mix, _ = aug_layer(img_u_mix, mask_u_mix_raw, mode='train_u')
+            idx = torch.randperm(img_u_w.size(0))
+                
+            img_u_w_mix = img_u_w[idx]
+            img_u_s_mix = img_u_s[idx]
+            ignore_mask_mix = ignore_mask[idx]
             
             # if step == 1: break
             start_event.record()
             
-            img_l, mask_l = img_l.cuda(), mask_l.cuda()
-            img_u_w = img_u_w.cuda()
-            img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
-            cutmix_box = cutmix_box.cuda()
-            img_u_w_mix = img_u_w_mix.cuda()
-            img_u_s_mix = img_u_s_mix.cuda()
-            ignore_mask_mix = ignore_mask_mix.cuda()
+            img_l, mask_l = img_l.cuda(non_blocking=True), mask_l.cuda(non_blocking=True)
+            img_u_w = img_u_w.cuda(non_blocking=True)
+            img_u_s, ignore_mask = img_u_s.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
+            cutmix_box = cutmix_box.cuda(non_blocking=True)
+            img_u_w_mix = img_u_w_mix.cuda(non_blocking=True)
+            img_u_s_mix = img_u_s_mix.cuda(non_blocking=True)
+            ignore_mask_mix = ignore_mask_mix.cuda(non_blocking=True)
             
             
             with torch.no_grad():
                 model.eval()
-                res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False)
+                res_u_w_mix = model(img_u_w_mix, mode='test')
                 logit_u_w_mix = res_u_w_mix['out'].detach()
                 # logit은 모델의 확신 점수이다. 
                 conf_u_w_mix = logit_u_w_mix.softmax(dim=1).max(dim=1)[0]
                 mask_u_w_mix = logit_u_w_mix.argmax(dim=1) # pseudo label
                 img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
                     img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
-                # img_u_s[cutmix_box.expand(img_u_s.shape) == 1] = \
-                #     img_u_s_mix[cutmix_box.expand(img_u_s.shape) == 1]
-                    
-            # a = (img_u_s[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+                
+                del logit_u_w_mix
+                del res_u_w_mix
             
             model.train()
             label_batch_size, unlabel_batch_size = img_l.shape[0], img_u_w.shape[0]
             
             # region model 호출1
-            res_w = model(torch.cat((img_l, img_u_w)), need_fp=True, use_corr=True)
+            # res_w = model(torch.cat((img_l, img_u_w)), need_fp=True, use_corr=True)
+            results = model(torch.cat((img_l, img_u_w, img_u_s)))
 
-            preds = res_w['out'] # 모델의 디코더 출력
-            preds_fp = res_w['out_fp'] # feature perturbation output
-            preds_corr = res_w['corr_out']
-            preds_corr_map = res_w['binary_norm_corr_map'].detach()
+            preds = results['out']
+            preds_fp = results['out_fp']
+            preds_corr = results['corr_out']
+            preds_corr_map = results['binary_norm_corr_map'].detach()
             # 6번 수식의 z값이 pred_u_w_corr
             pred_x_corr, pred_u_w_corr = preds_corr.split([label_batch_size, unlabel_batch_size])
             pred_u_w_corr_map = preds_corr_map[label_batch_size:]
             # pred_u_w_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
-            pred_x, pred_u_w = preds.split([label_batch_size, unlabel_batch_size]) # 라벨이미지와 언라벨이미지의 logits
-            pred_u_w_fp = preds_fp[label_batch_size:] # unlabeled weak 배치만
+            pred_x, pred_u_w = preds.split([label_batch_size, unlabel_batch_size])
+            pred_u_w_fp = preds_fp[label_batch_size:]
 
             # region model 호출2
-            res_s = model(img_u_s, need_fp=False, use_corr=True)
-            pred_u_s1 = res_s['out']
-            pred_u_s1_corr = res_s['corr_out']
+            # res_s = model(img_u_s, need_fp=False, use_corr=True)
+            pred_u_s1 = results['out_u_s']
+            pred_u_s1_corr = results['corr_out_u_s']
 
             # pred_u_w = pred_u_w.detach()
             # 2번 수식의 max F_hat
@@ -254,7 +252,7 @@ def main():
             
             # 추론을 통해 나온 Pseudo Label을 그대로 옮김. 
             mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
-            mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
+            # mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
             conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_mix[cutmix_box_map]
             ignore_mask_cutmixed1[cutmix_box_map] = ignore_mask_mix[cutmix_box_map]
             cutmix_box_sample = rearrange(cutmix_box_map, 'n h w -> n 1 h w')
