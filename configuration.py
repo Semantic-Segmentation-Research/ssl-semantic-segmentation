@@ -38,7 +38,7 @@ class TrainConfig:
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 512
+    crop_size: int      = 416
     
     @dataclass
     class LossConfig:

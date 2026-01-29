@@ -19,8 +19,8 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
     union_meter = AverageMeter()
 
     with torch.no_grad():
-        for img, mask, image_path, img_ori in loader:
-            img = img.cuda()
+        for img, mask, image_path in loader:
+            img = img.cuda(non_blocking=True)
             b, _, h, w = img.shape
             if mode == 'sliding_window':
                 grid = tcfg.crop_size

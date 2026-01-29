@@ -190,7 +190,7 @@ def main():
             img_u_s_mix = img_u_s[idx]
             ignore_mask_mix = ignore_mask[idx]
             
-            # if step == 1: break
+            if step == 1: break
             start_event.record()
             
             img_l, mask_l = img_l.cuda(non_blocking=True), mask_l.cuda(non_blocking=True)

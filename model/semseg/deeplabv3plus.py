@@ -58,17 +58,18 @@ class DeepLabV3Plus(nn.Module):
     # region forward
     def forward(self, x, mode='train'):
         result_dict = {}
-        # b, _, input_height, input_width = x.shape
+        image_height, image_width = x.shape[2:]
 
         c1, c2, c3, c4 = self.backbone.base_forward(x)
         if mode =='train':
             c1, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             c4, c4_u_s = torch.split(c4, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
-            out_u_s = self._decode(c1_u_s, c4_u_s)
+            out_u_s = self._decode(c1_u_s, c4_u_s, size=(image_height, image_width))
             result_dict['out_u_s'] = out_u_s
             
-            outs = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))))
+            outs = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))), 
+                                size=(image_height, image_width))
             out, out_fp = outs.chunk(2)
                 
             binary_norm_corr_map, corr_out = self._feature_corr(enc_out=c4, dec_out=out, aug_type='weak')
@@ -81,14 +82,16 @@ class DeepLabV3Plus(nn.Module):
             result_dict['corr_out_u_s'] = corr_out_u_s
             
         elif mode == 'test':
-            out = self._decode(c1, c4)
+            out = self._decode(c1, c4, size=(image_height, image_width))
 
         result_dict['out'] = out
         
         return result_dict
 
 
-    def _decode(self, c1, c4):
+    def _decode(self, c1, c4, size):
+        image_height, image_width = size
+        
         c4 = self.aspp(c4)
         c4 = F.interpolate(c4, size=c1.shape[-2:], mode="bilinear", align_corners=True)
 
@@ -98,7 +101,7 @@ class DeepLabV3Plus(nn.Module):
         feature = self.fuse(feature)
         
         out = self.classifier(feature)
-        out = F.interpolate(out, (self.tcfg.crop_size, self.tcfg.crop_size), mode="bilinear", align_corners=True)
+        out = F.interpolate(out, (image_height, image_width), mode="bilinear", align_corners=True)
         
         return out
     

@@ -57,16 +57,16 @@ class SemiDataset(Dataset):
             gt_copy[mask == key] = value
         mask = Image.fromarray(gt_copy.astype(np.uint8))
         
-        if self.vis_mask: 
-            vis_mask = utils.colorize_mask(mask)
+        # if self.vis_mask: 
+        #     vis_mask = utils.colorize_mask(mask)
             
         if self.mode == 'val':
             image_path = image_path.split(' ')[0]
             
-            img_ori = np.array(img) 
+            # img_ori = np.array(img) 
             img, mask = normalize(img, mask)
             
-            return img, mask, image_path, img_ori
+            return img, mask, image_path
         # ---------------------------------------------------------
         
         # -------------------- Weak Augmentation --------------------
