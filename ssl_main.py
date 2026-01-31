@@ -126,6 +126,7 @@ def main():
                                pin_memory=True, 
                                num_workers=tcfg.num_workers, 
                                drop_last=True, 
+                               shuffle=(trainsampler_l is None),
                                sampler=trainsampler_l)
     
     trainsampler_u = torch.utils.data.distributed.DistributedSampler(unlabel_train_set) if use_ddp else None
@@ -134,6 +135,7 @@ def main():
                                       pin_memory=True, 
                                       num_workers=tcfg.num_workers, 
                                       drop_last=True, 
+                                      shuffle=(trainsampler_u is None),
                                       sampler=trainsampler_u)
     
     valsampler = torch.utils.data.distributed.DistributedSampler(validation_set) if use_ddp else None
@@ -142,6 +144,7 @@ def main():
                                    pin_memory=True, 
                                    num_workers=tcfg.num_workers,
                                    drop_last=False, 
+                                   shuffle=(valsampler is None),
                                    sampler=valsampler)
 
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
@@ -181,7 +184,7 @@ def main():
         #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
         
         dataloader = zip(label_train_loader, unlabel_train_loader)
-        for step, ((img_l, mask_l, l_image_path),
+        for step, ((img_l, mask_l, l_image_path), 
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
             idx = torch.randperm(img_u_w.size(0))
@@ -190,7 +193,7 @@ def main():
             img_u_s_mix = img_u_s[idx]
             ignore_mask_mix = ignore_mask[idx]
             
-            if step == 1: break
+            # if step == 1: break
             start_event.record()
             
             img_l, mask_l = img_l.cuda(non_blocking=True), mask_l.cuda(non_blocking=True)
@@ -200,7 +203,6 @@ def main():
             img_u_w_mix = img_u_w_mix.cuda(non_blocking=True)
             img_u_s_mix = img_u_s_mix.cuda(non_blocking=True)
             ignore_mask_mix = ignore_mask_mix.cuda(non_blocking=True)
-            
             
             with torch.no_grad():
                 model.eval()
@@ -220,7 +222,8 @@ def main():
             
             # region model 호출1
             # res_w = model(torch.cat((img_l, img_u_w)), need_fp=True, use_corr=True)
-            results = model(torch.cat((img_l, img_u_w, img_u_s)))
+            # results = model(torch.cat((img_l, img_u_w, img_u_s)))
+            results = model(torch.cat((img_l, img_u_w)))
 
             preds = results['out']
             preds_fp = results['out_fp']
@@ -278,7 +281,8 @@ def main():
             # segments : encoder에서의 유사도와 모델 예측 confidence를 곱해서 더더욱 중요한 부분만 살리기 위함
             
             ########### 9번 수식 전체 ############### region propag
-            # 신뢰도가 낮은 예측 영역 (mask_u_w_cutmixed1)을 주변의 지표를 활용해 정해(refinement)
+            # 신뢰도가 낮은 예측 영역 (mask_u_w_cutmixed1)을 주변의 지표를 활용해 refinement
+            # with torch.no_grad():
             for img_idx in range(b_sample):
                 for segment_idx in range(c_sample):
 
@@ -374,10 +378,12 @@ def main():
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
                 print('-'*100)
+                
+            del results, preds, preds_fp, preds_corr
         # region step 끝
         
         if tcfg.dataset == 'cityscapes':
-            eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'sliding_window'
+            eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
         else:
             eval_mode = 'original'
             

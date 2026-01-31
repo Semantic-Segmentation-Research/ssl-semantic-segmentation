@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 import torch
 from torchvision import transforms
+import torch.nn.functional as F
 
 palette = [128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153, 153, 153, 153, 250, 170, 30,
            220, 220, 0, 107, 142, 35, 152, 251, 152, 70, 130, 180, 220, 20, 60, 255, 0, 0, 0, 0, 142, 0, 0, 70,
@@ -80,6 +81,20 @@ def blur(img, p=0.5):
         sigma = np.random.uniform(0.1, 2.0)
         img = img.filter(ImageFilter.GaussianBlur(radius=sigma))
     return img
+
+
+def gaussian_blur_feature(x, kernel_size=3, sigma=1.0):
+    # 가우시안 커널 생성
+    x_range = torch.arange(kernel_size, device=x.device) - (kernel_size - 1) / 2
+    gauss = torch.exp(-x_range**2 / (2 * sigma**2))
+    gauss = gauss / gauss.sum()
+    
+    # 2D 커널로 확장 [C, 1, K, K]
+    kernel = gauss[:, None] * gauss[None, :]
+    kernel = kernel.expand(x.shape[1], 1, kernel_size, kernel_size).to(x.device)
+    
+    # Depthwise Convolution으로 블러 적용
+    return F.conv2d(x, kernel, groups=x.shape[1], padding=kernel_size//2)
 
 
 def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):

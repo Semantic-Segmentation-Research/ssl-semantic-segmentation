@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import math
 from einops import rearrange
 import os.path as osp
+from dataset import transform as dtf
 
 # region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
@@ -27,8 +28,10 @@ class DeepLabV3Plus(nn.Module):
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        low_channels = 256
-        high_channels = 2048
+        # low_channels = 256
+        # high_channels = 2048
+        low_channels = 128
+        high_channels = 512
 
         self.aspp = ASPPModule(high_channels, mcfg.dilations)
 
@@ -49,8 +52,10 @@ class DeepLabV3Plus(nn.Module):
             self.corr = CrossCovarianceAtt(nclass=mcfg.num_classes)
             # self.corr = Corr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
-                nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
-                nn.BatchNorm2d(256),
+                # nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
+                nn.Conv2d(512, 128, kernel_size=3, stride=1, padding=1, bias=True),
+                # nn.BatchNorm2d(256),
+                nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(0.1),
             )
@@ -60,10 +65,22 @@ class DeepLabV3Plus(nn.Module):
         result_dict = {}
         image_height, image_width = x.shape[2:]
 
-        c1, c2, c3, c4 = self.backbone.base_forward(x)
+        c1, _, c4 = self.backbone.base_forward(x)
         if mode =='train':
-            c1, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            c4, c4_u_s = torch.split(c4, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            _, c1_u_w = torch.split(c1, split_size_or_sections=self.tcfg.batch_size, dim=0)
+            _, c4_u_w = torch.split(c4, split_size_or_sections=self.tcfg.batch_size, dim=0)
+            
+            sigma_sampler = torch.distributions.Uniform(low=0.1, high=2.0)
+            sigma = sigma_sampler.sample().to(c4.device)
+            
+            c1_u_s1= dtf.gaussian_blur_feature(c1_u_w, kernel_size=5, sigma=sigma)
+            c4_u_s1= dtf.gaussian_blur_feature(c4_u_w, kernel_size=5, sigma=sigma)
+            
+            c1_u_s2 = c1_u_w + torch.randn_like(c1_u_w) * (torch.std(c1_u_w) * 0.1)
+            c4_u_s2 = c4_u_w + torch.randn_like(c4_u_w) * (torch.std(c4_u_w) * 0.1)
+            
+            c1_u_s = c1_u_s1 * c1_u_s2
+            c4_u_s = c4_u_s1 * c4_u_s2
             
             out_u_s = self._decode(c1_u_s, c4_u_s, size=(image_height, image_width))
             result_dict['out_u_s'] = out_u_s
@@ -237,8 +254,8 @@ class CrossCovarianceAtt(nn.Module):
         super(CrossCovarianceAtt, self).__init__()
     
         self.nclass = nclass
-        self.in_ch = 256
-        self.out_ch = 128
+        self.in_ch = 128
+        self.out_ch = 64
         
         self.qkv_conv = nn.Conv2d(self.in_ch, self.out_ch * 3, kernel_size=1, stride=1, padding=0, bias=True)
         self.dwconv = nn.Conv2d(self.out_ch, self.out_ch, kernel_size=3, padding=1, groups=self.out_ch)
@@ -249,7 +266,7 @@ class CrossCovarianceAtt(nn.Module):
     def forward(self, enc_out, dec_out, aug_type='weak'):
         result_dict = {}
         
-        enc_batch, _, enc_height, enc_width = enc_out.shape
+        _, _, enc_height, enc_width = enc_out.shape
         dec_height, dec_width = dec_out.shape[-2:]
         
         qkv = self.qkv_conv(enc_out).flatten(2)

@@ -27,18 +27,18 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "deeplabv3plus_resnet50_xca"
+    model_name: str     = "custom_resnet50_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
     pretrained_path: str = osp.join(osp.dirname(__file__), 'pretrained')
     
-    batch_size: int     = 4
+    batch_size: int     = 8
     lr: float           = 0.005
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 416
+    crop_size: int      = 448
     
     @dataclass
     class LossConfig:

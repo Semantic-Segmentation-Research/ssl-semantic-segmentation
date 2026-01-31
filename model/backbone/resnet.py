@@ -15,7 +15,8 @@ def conv1x1(in_planes, out_planes, stride=1):
 
 
 class Bottleneck(nn.Module):
-    expansion = 4
+    # expansion = 4
+    expansion = 2
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
                  base_width=64, dilation=1, norm_layer=None):
@@ -68,6 +69,7 @@ class ResNet(nn.Module):
         self._norm_layer = norm_layer
 
         self.inplanes = 128
+        # self.inplanes = 64
         self.dilation = 1
         if replace_stride_with_dilation is None:
             replace_stride_with_dilation = [False, False, False]
@@ -77,13 +79,18 @@ class ResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            # nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            # norm_layer(64),
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            norm_layer(32),
+            nn.ReLU(inplace=True),
+            # nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1, groups=32, bias=False),
+            nn.Conv2d(32, 64, kernel_size=1, stride=1, padding=0, bias=False),
             norm_layer(64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            norm_layer(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1, groups=64, bias=False),
+            nn.Conv2d(64, 128, kernel_size=1, stride=1, padding=0, bias=False),
         )
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
@@ -93,7 +100,9 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
                                        dilate=replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
+        # self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
+        #                                dilate=replace_stride_with_dilation[2], multi_grid=multi_grid)
+        self.layer4 = self._make_layer(block, 256, layers[3], stride=2,
                                        dilate=replace_stride_with_dilation[2], multi_grid=multi_grid)
 
         for m in self.modules():
@@ -108,9 +117,10 @@ class ResNet(nn.Module):
                 if isinstance(m, Bottleneck):
                     nn.init.constant_(m.bn3.weight, 0)
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, multi_grid=False):
-        norm_layer = self._norm_layer
+    def _make_layer(self, block, planes, num_block, stride=1, dilate=False, multi_grid=False):
+        # Inverted bottleneck 구조
         downsample = None
+        norm_layer = self._norm_layer
         previous_dilation = self.dilation
         if dilate:
             self.dilation *= stride
@@ -121,15 +131,16 @@ class ResNet(nn.Module):
                 norm_layer(planes * block.expansion),
             )
 
-        grids = [1] * blocks
+        grids = [1] * num_block
         if multi_grid:
             grids = [2, 2, 4]
 
         layers = list()
         layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
                             self.base_width, previous_dilation * grids[0], norm_layer))
+        
         self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
+        for i in range(1, num_block):
             layers.append(block(self.inplanes, planes, groups=self.groups,
                                 base_width=self.base_width, dilation=self.dilation * grids[i],
                                 norm_layer=norm_layer))
@@ -144,10 +155,10 @@ class ResNet(nn.Module):
 
         c1 = self.layer1(x) # H/4, W/4
         c2 = self.layer2(c1) # H/8, W/8
-        c3 = self.layer3(c2) # H/8, W/8 -> H/16, W/16
-        c4 = self.layer4(c3) # H/8, W/8 -> H/16, W/16
+        c2 = self.layer3(c2) # H/8, W/8 -> H/16, W/16
+        c4 = self.layer4(c2) # H/8, W/8 -> H/16, W/16
 
-        return c1, c2, c3, c4
+        return c1, c2, c4
 
 
 def _resnet(arch, block, layers, pretrained, **kwargs):
