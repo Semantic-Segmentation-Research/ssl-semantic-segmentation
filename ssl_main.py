@@ -31,6 +31,7 @@ from util.utils import count_params, init_log
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
+from util.vectorized_region_prop import vectorized_region_propagation
 
 from configuration import DataConfig, TrainConfig, ModelConfig
 
@@ -39,9 +40,6 @@ from configuration import DataConfig, TrainConfig, ModelConfig
 
 parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
 parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
-parser.add_argument('--local_rank', default=0, type=int)
-parser.add_argument('--port', default=0, type=int)
-
 
 
 def init_seeds(seed=0, cuda_deterministic=False):
@@ -67,38 +65,34 @@ def main():
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    rank, world_size = setup_distributed(port=args.port)
-
-    if rank == 0:
-        logger.info(f'{pprint.pformat(cfg)}\n')
-
+    rank, world_size = setup_distributed(port=tcfg.port)
     init_seeds(0, False)
 
     model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
 
     if rank == 0:
+        # logger.info(f'{pprint.pformat(cfg)}\n')
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
     optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
                      {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
                       'lr': tcfg.lr * cfg['lr_multi']}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
 
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
-    model.cuda()
+    model.to(device)
     
     if world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     if tcfg.LossConfig().name == 'CELoss':
-        criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).cuda(local_rank)
+        criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).to(device, non_blocking=True)
     elif tcfg.LossConfig().name == 'OHEM':
-        criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).cuda(local_rank)
+        criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).to(device, non_blocking=True)
     else:
         raise NotImplementedError(f'{tcfg.LossConfig().name} criterion is not implemented')
 
-    criterion_u = nn.CrossEntropyLoss(reduction='none').cuda(local_rank)
-    criterion_kl = nn.KLDivLoss(reduction='none').cuda(local_rank)
+    criterion_u = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
+    criterion_kl = nn.KLDivLoss(reduction='none').to(device, non_blocking=True)
     
 
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
@@ -117,7 +111,7 @@ def main():
                                  size=tcfg.crop_size,
                                  valid_path=dcfg.val_id_path) 
 
-    # aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
+    # aug_layer = GPUAugmentation(size=tcfg.crop_size).to(device)
     use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
     
     trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
@@ -154,12 +148,12 @@ def main():
     thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=cfg['thresh_init'])
 
     previous_best = 0.0
-    total_loss              = MeanMetric().to(local_rank).cuda()
-    total_label_loss        = MeanMetric().to(local_rank).cuda()
-    total_label_loss_corr   = MeanMetric().to(local_rank).cuda()
-    total_loss_s            = MeanMetric().to(local_rank).cuda()
-    total_loss_w_fp         = MeanMetric().to(local_rank).cuda()
-    total_loss_corr_u       = MeanMetric().to(local_rank).cuda()
+    total_loss              = MeanMetric().to(device=device)
+    total_label_loss        = MeanMetric().to(device=device)
+    total_label_loss_corr   = MeanMetric().to(device=device)
+    total_loss_s            = MeanMetric().to(device=device)
+    total_loss_w_fp         = MeanMetric().to(device=device)
+    total_loss_corr_u       = MeanMetric().to(device=device)
     
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
@@ -187,12 +181,6 @@ def main():
         for step, ((img_l, mask_l, l_image_path), 
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
-            idx = torch.randperm(img_u_w.size(0))
-                
-            img_u_w_mix = img_u_w[idx]
-            img_u_s_mix = img_u_s[idx]
-            ignore_mask_mix = ignore_mask[idx]
-            
             # if step == 1: break
             start_event.record()
             
@@ -200,17 +188,19 @@ def main():
             img_u_w = img_u_w.cuda(non_blocking=True)
             img_u_s, ignore_mask = img_u_s.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
             cutmix_box = cutmix_box.cuda(non_blocking=True)
-            img_u_w_mix = img_u_w_mix.cuda(non_blocking=True)
-            img_u_s_mix = img_u_s_mix.cuda(non_blocking=True)
-            ignore_mask_mix = ignore_mask_mix.cuda(non_blocking=True)
+            
+            idx = torch.randperm(img_u_w.size(0), device=device)
+            img_u_w_mix = img_u_w[idx].cuda(non_blocking=True)
+            img_u_s_mix = img_u_s[idx].cuda(non_blocking=True)
+            ignore_mask_mix = ignore_mask[idx].cuda(non_blocking=True)
             
             with torch.no_grad():
                 model.eval()
                 res_u_w_mix = model(img_u_w_mix, mode='test')
                 logit_u_w_mix = res_u_w_mix['out'].detach()
                 # logit은 모델의 확신 점수이다. 
-                conf_u_w_mix = logit_u_w_mix.softmax(dim=1).max(dim=1)[0]
-                mask_u_w_mix = logit_u_w_mix.argmax(dim=1) # pseudo label
+                prob_u_w_mix = logit_u_w_mix.softmax(dim=1)
+                conf_u_w_mix, mask_u_w_mix = prob_u_w_mix.max(dim=1) # pseudo label
                 img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
                     img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
                 
@@ -218,40 +208,38 @@ def main():
                 del res_u_w_mix
             
             model.train()
-            label_batch_size, unlabel_batch_size = img_l.shape[0], img_u_w.shape[0]
+            label_batch, unlabel_batch = img_l.shape[0], img_u_w.shape[0]
             
             # region model 호출1
             # res_w = model(torch.cat((img_l, img_u_w)), need_fp=True, use_corr=True)
             # results = model(torch.cat((img_l, img_u_w, img_u_s)))
-            results = model(torch.cat((img_l, img_u_w)))
-
-            preds = results['out']
-            preds_fp = results['out_fp']
-            preds_corr = results['corr_out']
-            preds_corr_map = results['binary_norm_corr_map'].detach()
-            # 6번 수식의 z값이 pred_u_w_corr
-            pred_x_corr, pred_u_w_corr = preds_corr.split([label_batch_size, unlabel_batch_size])
-            pred_u_w_corr_map = preds_corr_map[label_batch_size:]
-            # pred_u_w_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
-            pred_x, pred_u_w = preds.split([label_batch_size, unlabel_batch_size])
-            pred_u_w_fp = preds_fp[label_batch_size:]
+            with torch.amp.autocast('cuda'):
+                results = model(torch.cat((img_l, img_u_w)))
+                
+                pred_x, pred_u_w = results['out'].split([label_batch, unlabel_batch])
+                # 6번 수식의 z값이 pred_u_w_corr
+                pred_x_corr, pred_u_w_corr = results['corr_out'].split([label_batch, unlabel_batch])
+                pred_u_w_fp = results['out_fp'][label_batch:]
+                # pred_u_w_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
+                pred_u_w_corr_map = results['binary_norm_corr_map'][label_batch:].detach()
+                pred_u_s1 = results['out_u_s']
+                pred_u_s1_corr = results['corr_out_u_s']
 
             # region model 호출2
             # res_s = model(img_u_s, need_fp=False, use_corr=True)
             pred_u_s1 = results['out_u_s']
             pred_u_s1_corr = results['corr_out_u_s']
 
-            # pred_u_w = pred_u_w.detach()
             # 2번 수식의 max F_hat
-            conf_u_w = pred_u_w.detach().softmax(dim=1).max(dim=1)[0]
-            mask_u_w = pred_u_w.detach().argmax(dim=1)
+            softmax_u_w = pred_u_w.detach().softmax(dim=1)
+            conf_u_w, mask_u_w = softmax_u_w.max(dim=1)
 
             mask_u_w_cutmixed1, conf_u_w_cutmixed1, ignore_mask_cutmixed1 = mask_u_w.clone(), conf_u_w.clone(), ignore_mask.clone()
             corr_map_u_w_cutmixed1 = pred_u_w_corr_map.clone()
-            b_sample, c_sample, _, _ = corr_map_u_w_cutmixed1.shape
 
-            cutmix_box_map = (cutmix_box == 1)
-            cutmix_box_map = cutmix_box_map.squeeze(dim=1)
+            # cutmix_box_map = (cutmix_box == 1)
+            # cutmix_box_map = cutmix_box_map.squeeze(dim=1)
+            cutmix_box_map = (cutmix_box == 1).squeeze(dim=1)
             
             # 추론을 통해 나온 Pseudo Label을 그대로 옮김. 
             mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
@@ -280,11 +268,12 @@ def main():
             segments = (corr_map_u_w_cutmixed1 * conf_filter_u_w_sample).bool() # region-propa 재료
             # segments : encoder에서의 유사도와 모델 예측 confidence를 곱해서 더더욱 중요한 부분만 살리기 위함
             
+            
             ########### 9번 수식 전체 ############### region propag
             # 신뢰도가 낮은 예측 영역 (mask_u_w_cutmixed1)을 주변의 지표를 활용해 refinement
             # with torch.no_grad():
-            for img_idx in range(b_sample):
-                for segment_idx in range(c_sample):
+            for img_idx in range(tcfg.batch_size):
+                for segment_idx in range(corr_map_u_w_cutmixed1.shape[1]):
 
                     segment = segments[img_idx, segment_idx]
                     segment_ori = corr_map_u_w_cutmixed1[img_idx, segment_idx]
@@ -300,9 +289,18 @@ def main():
                         conf_filter_u_w_without_cutmix[img_idx] = conf_filter_u_w_without_cutmix[img_idx] | segment_ori
             
             conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | conf_filter_u_w
+            # mask_u_w_cutmixed1 = utils.vectorized_region_propagation(
+            #     mask=mask_u_w_cutmixed1,
+            #     segments=segments,
+            #     corr_map=corr_map_u_w_cutmixed1,
+            #     thresh=thresh_global,
+            #     num_classes=mcfg.num_classes,
+            #     device=device
+            # )
+            
+            # conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | corr_map_u_w_cutmixed1.squeeze(1).bool()
+            # conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | conf_filter_u_w
 
-            # loss_x = criterion_l(pred_x, mask_l)
-            # loss_x_corr = criterion_l(pred_x_corr, mask_l)
             label_loss = criterion_l(pred_x, mask_l)
             label_loss_corr = criterion_l(pred_x_corr, mask_l)
 
@@ -379,7 +377,7 @@ def main():
                 print(hyperparam + '\n' + loss_info)
                 print('-'*100)
                 
-            del results, preds, preds_fp, preds_corr
+            del results
         # region step 끝
         
         if tcfg.dataset == 'cityscapes':
@@ -466,6 +464,9 @@ if __name__ == '__main__':
     dcfg = DataConfig()
     tcfg = TrainConfig()
     mcfg = ModelConfig()
+    
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", local_rank)
 
     os.makedirs(osp.join(tcfg.exp_dir, "logs", tcfg.model_name), exist_ok=True)
     os.makedirs(osp.join(tcfg.exp_dir, "models", tcfg.model_name), exist_ok=True)

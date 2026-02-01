@@ -22,20 +22,21 @@ class DeepLabV3Plus(nn.Module):
         if 'resnet' in mcfg.backbone:
             backbone = resnet.__dict__[mcfg.backbone]
             self.backbone = backbone(pretrained_path,
+                                     nf=mcfg.nf,
+                                     bottleneck_nf=mcfg.bottleneck_nf,
+                                     bottleneck_exp=mcfg.bottleneck_exp,
                                      multi_grid=mcfg.multi_grid,
-                                     replace_stride_with_dilation=mcfg.replace_stride_with_dilation)
+                                     replace_stride_with_dilation=mcfg.replace_stride_with_dilation
+                                     )
         else:
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        # low_channels = 256
-        # high_channels = 2048
-        low_channels = 128
-        high_channels = 512
+        high_channels = mcfg.nf*8 * mcfg.bottleneck_exp
 
         self.aspp = ASPPModule(high_channels, mcfg.dilations)
 
-        self.reduce = nn.Sequential(nn.Conv2d(low_channels, 48, 1, bias=False),
+        self.reduce = nn.Sequential(nn.Conv2d(256, 48, 1, bias=False),
                                     nn.BatchNorm2d(48),
                                     nn.ReLU(True))
         self.fuse = nn.Sequential(nn.Conv2d(high_channels // 8 + 48, 256, 3, padding=1, bias=False),
@@ -49,16 +50,16 @@ class DeepLabV3Plus(nn.Module):
 
 
         if self.is_corr:
-            self.corr = CrossCovarianceAtt(nclass=mcfg.num_classes)
-            # self.corr = Corr(nclass=mcfg.num_classes)
             self.proj = nn.Sequential(
-                # nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
-                nn.Conv2d(512, 128, kernel_size=3, stride=1, padding=1, bias=True),
-                # nn.BatchNorm2d(256),
-                nn.BatchNorm2d(128),
+                # nn.Conv2d(512, 128, kernel_size=3, stride=1, padding=1, bias=True),
+                # nn.BatchNorm2d(128),
+                nn.Conv2d(high_channels, 256, kernel_size=3, stride=1, padding=1, bias=True),
+                nn.BatchNorm2d(256),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(0.1),
             )
+            self.corr = CrossCovarianceAtt(256, 128, nclass=mcfg.num_classes)
+            # self.corr = Corr(nclass=mcfg.num_classes)
 
     # region forward
     def forward(self, x, mode='train'):
@@ -250,12 +251,14 @@ class Corr(nn.Module):
 
 # region - XCA
 class CrossCovarianceAtt(nn.Module):
-    def __init__(self, nclass=21):
+    def __init__(self, in_ch, out_ch, nclass=21):
         super(CrossCovarianceAtt, self).__init__()
     
         self.nclass = nclass
-        self.in_ch = 128
-        self.out_ch = 64
+        # self.in_ch = 128
+        # self.out_ch = 64
+        self.in_ch = in_ch
+        self.out_ch = out_ch
         
         self.qkv_conv = nn.Conv2d(self.in_ch, self.out_ch * 3, kernel_size=1, stride=1, padding=0, bias=True)
         self.dwconv = nn.Conv2d(self.out_ch, self.out_ch, kernel_size=3, padding=1, groups=self.out_ch)

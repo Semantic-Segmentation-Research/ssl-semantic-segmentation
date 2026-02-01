@@ -22,6 +22,11 @@ class ModelConfig:
     dilations: list     = field(default_factory=lambda: [12, 24, 36])
     replace_stride_with_dilation: list = field(default_factory=lambda: [False, True, True])
     
+    nf: int             = 64
+    bottleneck_nf: int  = 128
+    bottleneck_exp: int = 4
+    
+    
 
 # region - Train
 @dataclass
@@ -34,11 +39,14 @@ class TrainConfig:
     pretrained_path: str = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 0.005
+    # lr: float           = 0.005
+    lr: float           = 2.5e-3
     num_epochs: int     = 240
     num_workers: int    = 8
     
     crop_size: int      = 448
+    local_rank: int     = 0
+    port: int           = 0
     
     @dataclass
     class LossConfig:
