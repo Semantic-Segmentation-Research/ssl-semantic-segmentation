@@ -32,21 +32,21 @@ class DeepLabV3Plus(nn.Module):
             assert self.mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        self.decoder1 = context.SegHead(mcfg, 
+        self.c14_aspp_module = context.ASPP(mcfg, 
                                  high_ch= self.mcfg.nf * 8 * self.mcfg.bottleneck_exp,
-                                 mid_ch=256,
                                  low_ch=36,
                                  ratio=8)
-        self.decoder2 = context.SegHead(mcfg, 
-                                 high_ch= self.mcfg.nf * 4 * self.mcfg.bottleneck_exp,
-                                 mid_ch=256,
+        self.c12_aspp_module = context.ASPP(mcfg, 
+                                 high_ch= self.mcfg.nf * 2 * self.mcfg.bottleneck_exp,
                                  low_ch=36,
-                                 ratio=4)
-        self.dw_sep_conv = nn.Sequential(
-            nn.Conv2d(self.mcfg.num_classes, self.mcfg.num_classes, kernel_size=3, padding=1, groups=self.mcfg.num_classes),
-            nn.Conv2d(self.mcfg.num_classes, self.mcfg.num_classes, kernel_size=1, padding=1)
-        )
-        
+                                 ratio=2)
+        self.decoder = context.SegHead(in_ch= 36 + self.mcfg.nf * self.mcfg.bottleneck_exp,
+                                           mid_ch=256,
+                                           out_ch=self.mcfg.num_classes)
+        self.us_decoder = context.SegHead(in_ch= 36 + 2*(self.mcfg.nf * self.mcfg.bottleneck_exp),
+                                           mid_ch=256,
+                                           out_ch=self.mcfg.num_classes)
+
         self.corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 8 * self.mcfg.bottleneck_exp,
                                                 in_ch=256,
                                                 out_ch=128,
@@ -62,18 +62,22 @@ class DeepLabV3Plus(nn.Module):
         """ 멀티 스케일 해볼까?"""
         if mode =='train':
             c1_l_w, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            _, c3_u_s = torch.split(c3, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            _, c2_u_s = torch.split(c2, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             c4_l_w, c4_u_s = torch.split(c4, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
-            out_u_s14 = self.decoder1(c1_u_s, c4_u_s, size=(image_height, image_width))
-            out_u_s12 = self.decoder2(c1_u_s, c3_u_s, size=(image_height, image_width))
-            out_u_s   = out_u_s12 * out_u_s14
-            out_u_s = self.dw_sep_conv(out_u_s)
-            
+            c1_u_s_aspp, c4_u_s_aspp = self.c14_aspp_module(c1_u_s, c4_u_s)
+            c1_u_s_aspp, c2_u_s_aspp = self.c12_aspp_module(c1_u_s, c2_u_s)
+            feature = torch.cat([c1_u_s_aspp, c2_u_s_aspp, c4_u_s_aspp], dim=1)
+            out_u_s = self.us_decoder(feature, size=(image_height, image_width))
             result_dict['out_u_s'] = out_u_s
             
-            outs = self.decoder1(torch.cat((c1_l_w, nn.Dropout2d(0.5)(c1_l_w))), torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))), 
-                                size=(image_height, image_width))
+            c1_l_w_aspp, c4_l_w_aspp = self.c14_aspp_module(torch.cat((c1_l_w, nn.Dropout2d(0.5)(c1_l_w))), 
+                                                  torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))))
+            feature         = torch.cat([c1_l_w_aspp, c4_l_w_aspp], dim=1)
+            outs            = self.decoder(feature, size=(image_height, image_width))
+            # outs = self.decoder(torch.cat((c1_l_w, nn.Dropout2d(0.5)(c1_l_w))), 
+            #                      torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))),
+            #                     size=(image_height, image_width))
             out, out_fp = outs.chunk(2)
             result_corr = self.corr(enc_out=c4_l_w, dec_out=out, aug_type='weak')
             
@@ -85,8 +89,11 @@ class DeepLabV3Plus(nn.Module):
             result_dict['corr_out_u_s'] = result_corr["corr_dec_out"]
             
         elif mode == 'test':
-            out = self.decoder1(c1, c4, size=(image_height, image_width))
-
+            # out = self.decoder(c1, c4, size=(image_height, image_width))
+            c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)
+            feature         = torch.cat([c1_u_s, c4_u_s], dim=1)
+            out             = self.decoder(feature, size=(image_height, image_width))
+            
         result_dict['out'] = out
         
         return result_dict

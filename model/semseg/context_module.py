@@ -194,9 +194,9 @@ class CrossCovarianceAtt(nn.Module):
         return norm_corr_map
     
 
-# region - SegHead
-class SegHead(nn.Module):
-    def __init__(self, mcfg, high_ch, mid_ch, low_ch, ratio=8):
+# region - ASPP
+class ASPP(nn.Module):
+    def __init__(self, mcfg, high_ch, low_ch, ratio=8):
         super().__init__()
         
         self.aspp = ASPPModule(in_channels=high_ch, 
@@ -207,28 +207,34 @@ class SegHead(nn.Module):
                                     nn.BatchNorm2d(low_ch),
                                     nn.ReLU(True))
         
-        self.fuse = nn.Sequential(nn.Conv2d(high_ch // ratio + low_ch, mid_ch, 3, padding=1, bias=False),
+    def forward(self, feat1, feat2):
+        feat2 = self.aspp(feat2)
+        feat2 = F.interpolate(feat2, size=feat1.shape[-2:], mode="bilinear", align_corners=True)
+
+        feat1 = self.reduce(feat1)
+
+        return feat1, feat2
+
+# region - SegHead
+class SegHead(nn.Module):
+    def __init__(self, in_ch, mid_ch, out_ch):
+        super().__init__()
+        self.fuse = nn.Sequential(nn.Conv2d(in_ch, mid_ch, 3, padding=1, bias=False),
                                   nn.BatchNorm2d(mid_ch),
                                   nn.ReLU(True),
                                   nn.Conv2d(mid_ch, mid_ch, 3, padding=1, bias=False),
                                   nn.BatchNorm2d(mid_ch),
                                   nn.ReLU(True))
         
-        self.classifier = nn.Conv2d(mid_ch, mcfg.num_classes, 1, bias=True)
+        self.classifier = nn.Conv2d(mid_ch, out_ch, 1, bias=True)
         
         
-    def forward(self, feat1, feat2, size):
+    def forward(self, feature, size):
         image_height, image_width = size
-        
-        feat2 = self.aspp(feat2)
-        feat2 = F.interpolate(feat2, size=feat1.shape[-2:], mode="bilinear", align_corners=True)
 
-        feat1 = self.reduce(feat1)
-
-        feature = torch.cat([feat1, feat2], dim=1)
         feature = self.fuse(feature)
         
         out = self.classifier(feature)
         out = F.interpolate(out, (image_height, image_width), mode="bilinear", align_corners=True)
-        
+
         return out
