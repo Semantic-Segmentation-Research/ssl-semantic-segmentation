@@ -24,23 +24,21 @@ class ModelConfig:
     
     nf: int             = 64
     bottleneck_nf: int  = 128
-    bottleneck_exp: int = 4
-    
+    bottleneck_exp: int = 3
     
 
 # region - Train
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "custom_resnet50_xca"
+    model_name: str     = "v1.1.0_custom_resnet50_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
     pretrained_path: str = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    # lr: float           = 0.005
-    lr: float           = 2.5e-3
+    lr: float           = 5e-3
     num_epochs: int     = 240
     num_workers: int    = 8
     
