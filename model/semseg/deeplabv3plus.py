@@ -59,7 +59,6 @@ class DeepLabV3Plus(nn.Module):
         image_height, image_width = x.shape[2:]
 
         c1, c2, c3, c4 = self.backbone.base_forward(x)
-        """ 멀티 스케일 해볼까?"""
         if mode =='train':
             c1_l_w, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             _, c2_u_s = torch.split(c2, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
@@ -75,9 +74,7 @@ class DeepLabV3Plus(nn.Module):
                                                   torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))))
             feature         = torch.cat([c1_l_w_aspp, c4_l_w_aspp], dim=1)
             outs            = self.decoder(feature, size=(image_height, image_width))
-            # outs = self.decoder(torch.cat((c1_l_w, nn.Dropout2d(0.5)(c1_l_w))), 
-            #                      torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))),
-            #                     size=(image_height, image_width))
+
             out, out_fp = outs.chunk(2)
             result_corr = self.corr(enc_out=c4_l_w, dec_out=out, aug_type='weak')
             
@@ -89,7 +86,6 @@ class DeepLabV3Plus(nn.Module):
             result_dict['corr_out_u_s'] = result_corr["corr_dec_out"]
             
         elif mode == 'test':
-            # out = self.decoder(c1, c4, size=(image_height, image_width))
             c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)
             feature         = torch.cat([c1_u_s, c4_u_s], dim=1)
             out             = self.decoder(feature, size=(image_height, image_width))

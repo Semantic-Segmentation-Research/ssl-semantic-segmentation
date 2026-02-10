@@ -31,14 +31,15 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.0_custom_resnet50_xca"
+    model_name: str     = "v1.1.3_custom_resnet50_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
     pretrained_path: str = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 5e-3
+    lr: float           = 1e-4 # 5e-3
+    lr_multi: float     = 1.0
     num_epochs: int     = 240
     num_workers: int    = 8
     
@@ -46,9 +47,14 @@ class TrainConfig:
     local_rank: int     = 0
     port: int           = 0
     
+    resume: bool        = False
+    
     @dataclass
     class LossConfig:
-        name: str = "OHEM"
+        name: str = "OHEM" # OHEM, CELoss
+        ignore_index: int = 255
+        ohem_threshold: float = 0.7
+        ohem_min_kept: int = 100000
         
         
     @dataclass
