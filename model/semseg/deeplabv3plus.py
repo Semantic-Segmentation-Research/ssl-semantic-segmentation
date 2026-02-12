@@ -47,7 +47,12 @@ class DeepLabV3Plus(nn.Module):
                                            mid_ch=256,
                                            out_ch=self.mcfg.num_classes)
 
-        self.corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 8 * self.mcfg.bottleneck_exp,
+        self.c4_corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 8 * self.mcfg.bottleneck_exp,
+                                                in_ch=256,
+                                                out_ch=128,
+                                                output_size=self.tcfg.crop_size,
+                                                nclass=self.mcfg.num_classes)
+        self.c2_corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 2 * self.mcfg.bottleneck_exp,
                                                 in_ch=256,
                                                 out_ch=128,
                                                 output_size=self.tcfg.crop_size,
@@ -60,30 +65,40 @@ class DeepLabV3Plus(nn.Module):
 
         c1, c2, c3, c4 = self.backbone.base_forward(x)
         if mode =='train':
-            c1_l_w, c1_u_s = torch.split(c1, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            _, c2_u_s = torch.split(c2, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            c4_l_w, c4_u_s = torch.split(c4, split_size_or_sections=[self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c1_lw_uw, c1_u_s = torch.split(c1, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            _, c2_u_s = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c4_lw_uw, c4_u_s = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
-            c1_u_s_aspp, c4_u_s_aspp = self.c14_aspp_module(c1_u_s, c4_u_s)
-            c1_u_s_aspp, c2_u_s_aspp = self.c12_aspp_module(c1_u_s, c2_u_s)
-            feature = torch.cat([c1_u_s_aspp, c2_u_s_aspp, c4_u_s_aspp], dim=1)
+            # ---------------- Unlabel Strong Part ----------------
+            c1_u_s1, c4_u_s1 = self.c14_aspp_module(c1_u_s, c4_u_s)
+            c1_u_s2, c2_u_s1 = self.c12_aspp_module(c1_u_s, c2_u_s)
+            c1_u_s = c1_u_s1 + c1_u_s2
+            
+            feature = torch.cat([c1_u_s, c2_u_s1, c4_u_s1], dim=1)
             out_u_s = self.us_decoder(feature, size=(image_height, image_width))
             result_dict['out_u_s'] = out_u_s
             
-            c1_l_w_aspp, c4_l_w_aspp = self.c14_aspp_module(torch.cat((c1_l_w, nn.Dropout2d(0.5)(c1_l_w))), 
-                                                  torch.cat((c4_l_w, nn.Dropout2d(0.5)(c4_l_w))))
-            feature         = torch.cat([c1_l_w_aspp, c4_l_w_aspp], dim=1)
+            result_corr = self.c4_corr(enc_out=c4_u_s, dec_out=out_u_s, aug_type='strong')
+            result_dict['corr_out_u_s'] = result_corr["corr_dec_out"]
+            # ---------------------------------------------------------
+            
+            # ---------------- label+unlabel Weak Part ----------------
+            c1_lw_uw_fp, c4_lw_uw_fp = self.c14_aspp_module(
+                torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
+                torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
+                )
+            
+            feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
             outs            = self.decoder(feature, size=(image_height, image_width))
 
             out, out_fp = outs.chunk(2)
-            result_corr = self.corr(enc_out=c4_l_w, dec_out=out, aug_type='weak')
+            result_c4corr = self.c4_corr(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
+            # result_c2corr = self.c2_corr(enc_out=c2_lw_uw, dec_out=out, aug_type='weak')
             
-            result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
-            result_dict['corr_out'] = result_corr["corr_dec_out"]
+            result_dict['binary_norm_corr_map'] = result_c4corr["binary_norm_corr_map"]
+            result_dict['corr_out'] = result_c4corr["corr_dec_out"]
             result_dict['out_fp'] = out_fp
-
-            result_corr = self.corr(enc_out=c4_u_s, dec_out=out_u_s, aug_type='strong')
-            result_dict['corr_out_u_s'] = result_corr["corr_dec_out"]
+            # ---------------------------------------------------------
             
         elif mode == 'test':
             c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)

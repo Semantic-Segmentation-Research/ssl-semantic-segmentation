@@ -8,8 +8,8 @@ import random
 import kornia.augmentation as K
 
 from util import utils
-from dataset.transform import *
-# import dataset.transform as dt
+# from dataset.transform import *
+import dataset.transform as trf
 
 from PIL import Image
 import torch
@@ -18,12 +18,10 @@ from torchvision import transforms
 import torch.nn as nn
 
 class SemiDataset(Dataset):
-    def __init__(self, root, mode, vis_mask=False, valid_path=None, size=None, id_path=None, nsample=None):
+    def __init__(self, root, mode, valid_path=None, size=None, id_path=None, nsample=None):
         self.root = root
         self.mode = mode
         self.size = size
-        
-        self.vis_mask = vis_mask
         
         self.ignore_label = 255
         self.id_to_trainid = {-1: self.ignore_label, 0: self.ignore_label, 1: self.ignore_label, 2: self.ignore_label,
@@ -47,7 +45,6 @@ class SemiDataset(Dataset):
     def __getitem__(self, item):
         image_path = self.ids[item]
         
-        # ------------------- 데이터 읽기-------------------
         img = Image.open(osp.join(self.root, image_path.split(' ')[0])).convert('RGB')
         mask = Image.open(osp.join(self.root, image_path.split(' ')[1]))
         mask = np.array(mask)
@@ -57,56 +54,69 @@ class SemiDataset(Dataset):
             gt_copy[mask == key] = value
         mask = Image.fromarray(gt_copy.astype(np.uint8))
         
-        # if self.vis_mask: 
-        #     vis_mask = utils.colorize_mask(mask)
-            
         if self.mode == 'val':
             image_path = image_path.split(' ')[0]
-            
-            # img_ori = np.array(img) 
-            img, mask = normalize(img, mask)
+            img, mask = trf.normalize(img, mask)
             
             return img, mask, image_path
-        # ---------------------------------------------------------
         
         # -------------------- Weak Augmentation --------------------
-        img, mask = resize(img, mask, (0.5, 2.0)) # 0.5와 2.0의 ratio를 적용한 랜덤 정수값으로 resize
-        ignore_value = 254 if self.mode == 'train_u' else self.ignore_label # unlabeld 데이터셋일때는 ignore_value=254로 대입, else ignore_v=255
-        img, mask = crop(img, mask, self.size, ignore_value) # 801-w, 801-h 를 하여 패딩설정후, 좌우를 0으로 채움
-        img, mask = hflip(img, mask, p=0.5)
-
-        img_w, mask_w = normalize(img, mask) 
-        if self.mode == 'train_l':
-            return img_w, mask_w, image_path
-        # if self.mode == 'train_l':
-        #     image, mask = normalize(img, mask) 
-        #     return image, mask, image_path
+        img_w, mask_w = self.apply_weak_augm(img, mask)
+        img_w_norm, mask_w_norm = trf.normalize(img_w, mask_w)
         # ---------------------------------------------------------
-        
-        img_s = deepcopy(img)
-        # img_w, img_s = deepcopy(img), deepcopy(img)
-        # img_w = normalize(img_w)
+        if self.mode == 'train_l':
+            return img_w_norm, mask_w_norm, image_path
         
         # -------------------- Strong Augmentation --------------------
-        if random.random() < 0.8:
-            img_s = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_s)
-        img_s = transforms.RandomGrayscale(p=0.2)(img_s)
-        img_s = blur(img_s, p=0.5)
-        # Cutmix 할 영역을 가져옴. 
-        cutmix_box = obtain_cutmix_box(img_s.size[0], p=0.5)
-
-        ignore_mask = Image.fromarray(np.zeros((mask.size[1], mask.size[0]))) # mask사이즈의 0으로 된 array를 Pil image로 재구성
-        img_s, ignore_mask = normalize(img_s, ignore_mask) # img는 Tensor와 normalize, mask는 numpy to tensor형태로 변환
-
-        mask = torch.from_numpy(np.array(mask)).long()
-        ignore_mask[mask == 254] = self.ignore_label # ignore_mask는 mask에서 254픽셀부분을 255로 변환
+        img_s_norm, ignore_mask, cutmix_box = self.apply_strong_augm(img_w, mask_w)
         # ------------------------------------------------------------
         
-        # return img_w, img_s, np.array(img_w), ignore_mask, cutmix_box, image_path
-        return img_w, img_s, ignore_mask, cutmix_box, image_path
+        # img_s = deepcopy(img_w)
+        # # -------------------- Strong Augmentation --------------------
+        # if random.random() < 0.8:
+        #     img_s = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_s)
+        # img_s = transforms.RandomGrayscale(p=0.2)(img_s)
+        # img_s = trf.blur(img_s, p=0.5)
+        # cutmix_box = trf.obtain_cutmix_box(img_s.size[0], p=0.5)
+
+        # ignore_mask = Image.fromarray(np.zeros((mask.size[1], mask.size[0]))) # mask사이즈의 0으로 된 array를 Pil image로 재구성
+        # img_s, ignore_mask = trf.normalize(img_s, ignore_mask) # img는 Tensor와 normalize, mask는 numpy to tensor형태로 변환
+
+        # mask = torch.from_numpy(np.array(mask)).long()
+        # ignore_mask[mask == 254] = self.ignore_label # ignore_mask는 mask에서 254픽셀부분을 255로 변환
+        # # ------------------------------------------------------------
+        
+        return img_w_norm, img_s_norm, ignore_mask, cutmix_box, image_path
 
     def __len__(self):
         return len(self.ids)
+    
+    
+    def apply_weak_augm(self, img, mask):
+        img, mask = trf.resize(img, mask, (0.5, 2.0))
+        ignore_value = 254 if self.mode == 'train_u' else self.ignore_label
+        img, mask = trf.crop(img, mask, self.size, ignore_value)
+        img, mask = trf.hflip(img, mask, p=0.5)
+        
+        return img, mask
+        
+    
+    def apply_strong_augm(self, img, mask):
+        # img_s = deepcopy(img)
+        if random.random() < 0.8:
+            img = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img)
+        img = transforms.RandomGrayscale(p=0.2)(img)
+        img = trf.blur(img, p=0.5)
+        cutmix_box = trf.obtain_cutmix_box(img.size[0], p=0.5)
+
+        ignore_mask = np.zeros((self.size, self.size))
+        img, ignore_mask = trf.normalize(img, ignore_mask) # img는 Tensor와 normalize, mask는 numpy to tensor형태로 변환
+
+        mask = torch.from_numpy(np.array(mask)).long()
+        ignore_mask[mask == 254] = self.ignore_label # ignore_mask는 mask에서 254픽셀부분을 255로 변환
+        
+        return img, ignore_mask, cutmix_box
+    
     
     
 # class SemiDataset(Dataset):

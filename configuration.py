@@ -31,14 +31,14 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.3_custom_resnet50_xca"
+    model_name: str     = "v1.1.4_custom_resnet50_xca"
 
     exp_dir: str        = osp.join(BASE_DIR, "experiments")
     data_root: str      = osp.join(BASE_DIR, 'data')
     pretrained_path: str = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 1e-4 # 5e-3
+    lr: float           = 5e-4 # 5e-3
     lr_multi: float     = 1.0
     num_epochs: int     = 240
     num_workers: int    = 8
@@ -47,6 +47,9 @@ class TrainConfig:
     local_rank: int     = 0
     port: int           = 0
     
+    lr_period: int       = 120
+    label_lr_decay: float = 0.9
+    unlabel_lr_decay: float = 0.95
     resume: bool        = False
     
     @dataclass

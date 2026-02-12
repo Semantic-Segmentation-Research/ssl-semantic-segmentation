@@ -54,21 +54,25 @@ def init_seeds(seed=0, cuda_deterministic=False):
         cudnn.benchmark = True
 
 
-def test(model, img_u_w_mix, img_u_s, cutmix_box, img_u_s_mix):
+# region - test
+# def test(model, dataloader, img_u_s, cutmix_box):
+    # img_u_w, img_u_s2, ignore_mask, _, _ = next(iter(dataloader))
+def test(model, img_u_w, img_u_s, ignore_mask, cutmix_box):
+    indices = torch.randperm(img_u_w.size(0), device=device)
+    ignore_mask = ignore_mask[indices]
+    
     with torch.no_grad():
         model.eval()
-        res_u_w_mix = model(img_u_w_mix, mode='test')
-        logit_u_w_mix = res_u_w_mix['out'].detach()
-        # logit은 모델의 확신 점수이다. 
-        prob_u_w_mix = logit_u_w_mix.softmax(dim=1)
-        conf_u_w_mix, mask_u_w_mix = prob_u_w_mix.max(dim=1) # pseudo label
+        res_u_w_pred = model(img_u_w[indices], mode='test')
+        
+        logit_u_w = res_u_w_pred['out'].detach()
+        prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
+        conf_u_w, mask_u_w = prob_u_w.max(dim=1) # pseudo label
+        
         img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
-            img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
+            img_u_s[indices][cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
         
-        
-        # del logit_u_w_mix
-        # del res_u_w_mix
-        return conf_u_w_mix, mask_u_w_mix, img_u_s
+        return conf_u_w, mask_u_w, img_u_s, ignore_mask
 
 
 # region - main
@@ -199,34 +203,28 @@ def main():
             unlabel_train_loader.sampler.set_epoch(epoch)
         
         dataloader = zip(label_train_loader, unlabel_train_loader)
-        for step, ((img_l, mask_l, l_image_path), 
+        for step, ((img_l_w, mask_l_w, l_image_path), 
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
             # if step == 1: break
             start_event.record()
             
-            img_l, mask_l = img_l.cuda(non_blocking=True), mask_l.cuda(non_blocking=True)
+            img_l_w, mask_l_w = img_l_w.cuda(non_blocking=True), mask_l_w.cuda(non_blocking=True)
             img_u_w = img_u_w.cuda(non_blocking=True)
             img_u_s, ignore_mask = img_u_s.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
             cutmix_box = cutmix_box.cuda(non_blocking=True)
             
-            idx = torch.randperm(img_u_w.size(0), device=device)
-            img_u_w_mix = img_u_w[idx].cuda(non_blocking=True)
-            img_u_s_mix = img_u_s[idx].cuda(non_blocking=True)
-            ignore_mask_mix = ignore_mask[idx].cuda(non_blocking=True)
-            
-            conf_u_w_mix, mask_u_w_mix, img_u_s = test(model, img_u_w_mix, img_u_s, cutmix_box, img_u_s_mix)
-
+            conf_u_w_pred, mask_u_w_pred, img_u_s, ignore_mask_sampled = test(model, img_u_w, img_u_s, ignore_mask, cutmix_box)
             
             model.train()
-            label_batch, unlabel_batch = img_l.shape[0], img_u_w.shape[0]
+            label_batch, unlabel_batch = img_l_w.shape[0], img_u_w.shape[0]
             
             with torch.amp.autocast('cuda'):
-                results = model(torch.cat((img_l, img_u_w, img_u_s)))
+                results = model(torch.cat((img_l_w, img_u_w, img_u_s)))
                 
-                pred_x, pred_u_w = results['out'].split([label_batch, unlabel_batch])
+                pred_l_w, pred_u_w = results['out'].split([label_batch, unlabel_batch])
                 # 6번 수식의 z값이 pred_u_w_corr
-                pred_x_corr, pred_u_w_corr = results['corr_out'].split([label_batch, unlabel_batch])
+                pred_l_w_corr, pred_u_w_corr = results['corr_out'].split([label_batch, unlabel_batch])
                 pred_u_w_fp = results['out_fp'][label_batch:]
                 # pred_u_w_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
                 pred_u_w_corr_map = results['binary_norm_corr_map'][label_batch:].detach()
@@ -242,9 +240,9 @@ def main():
             corr_map_u_w_cutmixed1 = pred_u_w_corr_map.clone()
 
             cutmix_box_map = (cutmix_box == 1).squeeze(dim=1)
-            mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
-            conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_mix[cutmix_box_map]
-            ignore_mask_cutmixed1[cutmix_box_map] = ignore_mask_mix[cutmix_box_map]
+            mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_pred[cutmix_box_map]
+            conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_pred[cutmix_box_map]
+            ignore_mask_cutmixed1[cutmix_box_map] = ignore_mask_sampled[cutmix_box_map]
             
             
             cutmix_box_sample = rearrange(cutmix_box_map, 'n h w -> n 1 h w')
@@ -268,7 +266,6 @@ def main():
             
             ########### 9번 수식 전체 ############### region propag
             # 신뢰도가 낮은 예측 영역 (mask_u_w_cutmixed1)을 주변의 지표를 활용해 refinement
-            # with torch.no_grad():
             for img_idx in range(tcfg.batch_size):
                 for segment_idx in range(corr_map_u_w_cutmixed1.shape[1]):
 
@@ -287,8 +284,8 @@ def main():
             
             conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | conf_filter_u_w
 
-            label_loss = criterion_l(pred_x, mask_l)
-            label_loss_corr = criterion_l(pred_x_corr, mask_l)
+            label_loss = criterion_l(pred_l_w, mask_l_w)
+            label_loss_corr = criterion_l(pred_l_w_corr, mask_l_w)
 
             # 1번 수식: Consistency Regularization
             loss_u_s = criterion_u(pred_u_s, mask_u_w_cutmixed1)
@@ -344,9 +341,15 @@ def main():
             total_loss_corr_u.update(loss_u_corr.detach())
             total_mask_ratio += ((conf_u_w >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
-
+            
+            
+            power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
+            current_cycle_epoch = epoch % tcfg.lr_period
+            iters = current_cycle_epoch * len(unlabel_train_loader) + step
+            num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
+            
             iters = epoch * len(unlabel_train_loader) + step
-            lr = tcfg.lr * (1 - iters / num_total_steps) ** 0.9
+            lr = tcfg.lr * (1 - iters / num_cycle_steps) ** power
             optimizer.param_groups[0]["lr"] = lr
             optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
 
@@ -402,16 +405,16 @@ def main():
                       image_path=l_image_path,
                       epoch=epoch)
 
-        img_l = img_l.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        if mask_l.dim() == 4:
-            gt = mask_l.detach().cpu().permute(0, 2, 3, 1).numpy()
-        elif mask_l.dim() == 3:
-            gt = mask_l.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        img_l_w = img_l_w.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_l_w = pred_l_w.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_l = pred_l_w.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        if mask_l_w.dim() == 4:
+            gt = mask_l_w.detach().cpu().permute(0, 2, 3, 1).numpy()
+        elif mask_l_w.dim() == 3:
+            gt = mask_l_w.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
-                      image=img_l, 
-                      pred=pred_mask_l,
+                      image=img_l_w, 
+                      pred=pred_mask_l_w,
                       conf=conf_l,
                       mask=gt,
                       image_path=u_image_path,
