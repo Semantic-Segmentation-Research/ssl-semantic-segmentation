@@ -183,11 +183,16 @@ def main():
     end_event = torch.cuda.Event(enable_timing=True)
     
     start_epoch = 0
+    
     if tcfg.resume:
-        checkpoint = torch.load(osp.join(model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'), map_location=device)
+        latest_model = os.listdir(tcfg.model_save_dir)[-1]
+        checkpoint = torch.load(osp.join(tcfg.model_save_dir, latest_model), map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch']
+        start_epoch = checkpoint['epoch'] + 1
+        
+        logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
+        
         
     # region - Train
     for epoch in range(start_epoch, tcfg.num_epochs):
@@ -343,12 +348,12 @@ def main():
                                 (ignore_mask != 255).sum().item()
             
             
+            # iters = epoch * len(unlabel_train_loader) + step
             power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
             current_cycle_epoch = epoch % tcfg.lr_period
             iters = current_cycle_epoch * len(unlabel_train_loader) + step
             num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
             
-            iters = epoch * len(unlabel_train_loader) + step
             lr = tcfg.lr * (1 - iters / num_cycle_steps) ** power
             optimizer.param_groups[0]["lr"] = lr
             optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
@@ -440,14 +445,14 @@ def main():
             torch.distributed.barrier()
 
         if res_val['mIOU'] > previous_best and rank == 0:
-            model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
+            # model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
             
             if previous_best != 0:
-                os.remove(osp.join(model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
+                os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
             torch.save({"epoch": epoch,
                         "model_state_dict": model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict()}, osp.join(model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+                        'optimizer_state_dict': optimizer.state_dict()}, osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
         if rank != 0:
             torch.distributed.barrier()

@@ -74,7 +74,7 @@ w, h = image.size
 # [ROI 설정] 상단 30%(하늘/건물 일부)와 하단 15%(보닛)를 제외
 # 비율은 이미지의 특징에 따라 [0.3, 0.85] 등으로 조정 가능합니다.
 top = int(h * 0.3)
-bottom = int(h * 0.85)
+bottom = int(h * 0.8)
 left = 0
 right = w
 
