@@ -71,21 +71,6 @@ class SemiDataset(Dataset):
         img_s_norm, ignore_mask, cutmix_box = self.apply_strong_augm(img_w, mask_w)
         # ------------------------------------------------------------
         
-        # img_s = deepcopy(img_w)
-        # # -------------------- Strong Augmentation --------------------
-        # if random.random() < 0.8:
-        #     img_s = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_s)
-        # img_s = transforms.RandomGrayscale(p=0.2)(img_s)
-        # img_s = trf.blur(img_s, p=0.5)
-        # cutmix_box = trf.obtain_cutmix_box(img_s.size[0], p=0.5)
-
-        # ignore_mask = Image.fromarray(np.zeros((mask.size[1], mask.size[0]))) # mask사이즈의 0으로 된 array를 Pil image로 재구성
-        # img_s, ignore_mask = trf.normalize(img_s, ignore_mask) # img는 Tensor와 normalize, mask는 numpy to tensor형태로 변환
-
-        # mask = torch.from_numpy(np.array(mask)).long()
-        # ignore_mask[mask == 254] = self.ignore_label # ignore_mask는 mask에서 254픽셀부분을 255로 변환
-        # # ------------------------------------------------------------
-        
         return img_w_norm, img_s_norm, ignore_mask, cutmix_box, image_path
 
     def __len__(self):

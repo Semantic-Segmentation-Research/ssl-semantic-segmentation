@@ -20,15 +20,19 @@ class ModelConfig:
     num_classes: int    = 19
     dilations: list     = field(default_factory=lambda: [12, 24, 36])
     replace_stride_with_dilation: list = field(default_factory=lambda: [False, True, True])
+    norm_layer: str     = "BatchNorm2d"
     
-    nf: int       = 64
-    bttln_nf: int  = 128
+    nf: int       = 32
+    bttln_nf: int  = 64
     bttln_exp: int = 3
-    
     groups: int     = 1
-    width_per_group:int = 64
+    width_per_group:int = 32
+    num_blocks: list = field(default_factory=lambda: [3, 4, 6, 3])
+
     multi_grid: bool = False
     zero_init_residual: bool = False
+    
+    
     
 # region - Train
 @dataclass

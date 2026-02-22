@@ -19,38 +19,38 @@ class DeepLabV3Plus(nn.Module):
 
         if not osp.exists(pretrained_path): pretrained_path = False
             
-        if 'resnet' in self.mcfg.backbone:
-            backbone = resnet.__dict__[self.mcfg.backbone]
-            self.backbone = backbone(pretrained_path, mcfg)
+        if 'resnet' in mcfg.backbone:
+            backbone = resnet.__dict__[mcfg.backbone]
+            self.backbone = backbone(pretrained_path, mcfg=mcfg)
         else:
-            assert self.mcfg.backbone == 'xception'
+            assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
         self.c14_aspp_module = context.ASPP(mcfg, 
-                                 high_ch= self.mcfg.nf * 8 * self.mcfg.bttn_exp,
+                                 high_ch= mcfg.nf * 8 * mcfg.bttln_exp,
                                  low_ch=36,
                                  ratio=8)
         self.c12_aspp_module = context.ASPP(mcfg, 
-                                 high_ch= self.mcfg.nf * 2 * self.mcfg.bttn_exp,
+                                 high_ch= mcfg.nf * 2 * mcfg.bttln_exp,
                                  low_ch=36,
                                  ratio=2)
-        self.decoder = context.SegHead(in_ch= 36 + self.mcfg.nf * self.mcfg.bttn_exp,
+        self.decoder = context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
                                            mid_ch=256,
-                                           out_ch=self.mcfg.num_classes)
-        self.us_decoder = context.SegHead(in_ch= 36 + 2*(self.mcfg.nf * self.mcfg.bttn_exp),
+                                           out_ch=mcfg.num_classes)
+        self.us_decoder = context.SegHead(in_ch= 36 + 2*(mcfg.nf * mcfg.bttln_exp),
                                            mid_ch=256,
-                                           out_ch=self.mcfg.num_classes)
+                                           out_ch=mcfg.num_classes)
 
-        self.c4_corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 8 * self.mcfg.bttn_exp,
+        self.c4_corr = context.CrossCovarianceAtt(high_ch=mcfg.nf * 8 * mcfg.bttln_exp,
                                                 in_ch=256,
                                                 out_ch=128,
                                                 output_size=self.tcfg.crop_size,
-                                                nclass=self.mcfg.num_classes)
-        self.c2_corr = context.CrossCovarianceAtt(high_ch=self.mcfg.nf * 2 * self.mcfg.bttn_exp,
+                                                nclass=mcfg.num_classes)
+        self.c2_corr = context.CrossCovarianceAtt(high_ch=mcfg.nf * 2 * mcfg.bttln_exp,
                                                 in_ch=256,
                                                 out_ch=128,
                                                 output_size=self.tcfg.crop_size,
-                                                nclass=self.mcfg.num_classes)
+                                                nclass=mcfg.num_classes)
 
     # region forward
     def forward(self, x, mode='train'):
