@@ -377,14 +377,14 @@ def main():
             del results
         # region step 끝
         
-        if tcfg.dataset == 'cityscapes':
-            eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
-        else:
-            eval_mode = 'original'
+        # if tcfg.dataset == 'cityscapes':
+        #     eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
+        # else:
+        eval_mode = 'original'
             
         torch.cuda.empty_cache()
         # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
-        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode='original')
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=eval_mode)
         class_IOU = res_val['iou_class']
         
         # region  tensorboard
@@ -438,11 +438,8 @@ def main():
                       epoch=epoch)
 
 
-        if rank == 0:
-            logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-            logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
-        else:
-            torch.distributed.barrier()
+        logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
+        logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
 
         if res_val['mIOU'] > previous_best and rank == 0:
             # model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)

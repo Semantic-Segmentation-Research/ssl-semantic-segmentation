@@ -23,10 +23,10 @@ class ModelConfig:
     norm_layer: str     = "BatchNorm2d"
     
     nf: int       = 32
-    bttln_nf: int  = 64
+    bttln_nf: int  = 128
     bttln_exp: int = 3
     groups: int     = 1
-    width_per_group:int = 32
+    width_per_group:int = 64
     num_blocks: list = field(default_factory=lambda: [3, 4, 6, 3])
 
     multi_grid: bool = False
@@ -38,7 +38,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.2.0_custom_resnet50_xca"
+    model_name: str     = "v1.2.1_custom_resnet50_xca"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -51,14 +51,14 @@ class TrainConfig:
     num_epochs: int     = 800
     num_workers: int    = 8
     
-    crop_size: int      = 448
+    crop_size: int      = 512
     local_rank: int     = 0
     port: int           = 0
     
     lr_period: int       = 400
     label_lr_decay: float = 0.9
     unlabel_lr_decay: float = 0.98
-    resume: bool        = False
+    resume: bool        = True
     
     @dataclass
     class LossConfig:

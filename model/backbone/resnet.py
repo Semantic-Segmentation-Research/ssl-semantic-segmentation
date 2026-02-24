@@ -120,8 +120,8 @@ class ResNet(nn.Module):
         
         self.ds = nn.Sequential(
             nn.Conv2d(mcfg.nf*2, mcfg.nf*2, kernel_size=3, stride=2, padding=1, groups=mcfg.nf*2, bias=False),
-            nn.Conv2d(mcfg.nf*2, mcfg.nf*2, kernel_size=1, stride=1, padding=0, bias=False),
-            self._norm_layer(mcfg.nf*2)
+            nn.Conv2d(mcfg.nf*2, mcfg.bttln_nf, kernel_size=1, stride=1, padding=0, bias=False),
+            self._norm_layer(mcfg.bttln_nf)
         )
         
         self.layer1 = self._make_layer(block, 
