@@ -22,7 +22,7 @@ class ModelConfig:
     replace_stride_with_dilation: list = field(default_factory=lambda: [False, True, True])
     norm_layer: str     = "BatchNorm2d"
     
-    nf: int       = 32
+    nf: int       = 64
     bttln_nf: int  = 128
     bttln_exp: int = 3
     groups: int     = 1
@@ -38,7 +38,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.2.1_custom_resnet50_xca"
+    model_name: str     = "v1.1.6_custom_resnet50_xca"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -51,7 +51,7 @@ class TrainConfig:
     num_epochs: int     = 800
     num_workers: int    = 8
     
-    crop_size: int      = 512
+    crop_size: int      = 448
     local_rank: int     = 0
     port: int           = 0
     
