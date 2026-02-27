@@ -9,7 +9,10 @@ from model.semseg.deeplabv3plus import DeepLabV3Plus
 from torch.utils.data import DataLoader
 import yaml
 from dataset.semi import SemiDataset
-from util.utils import AverageMeter, intersectionAndUnion
+from util.utils import AverageMeter, intersectionAndUnion, labels
+
+
+filtered_labels = [label for label in labels if label.trainId != 255 and label.trainId != -1]
 
 def evaluate(tcfg, mcfg, rank, model, loader, mode):
     return_dict = {}
@@ -22,6 +25,7 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
         for img, mask, image_path in loader:
             img = img.cuda(non_blocking=True)
             b, _, h, w = img.shape
+            
             if mode == 'sliding_window':
                 grid = tcfg.crop_size
                 final = torch.zeros(b, 19, h, w).cuda()
@@ -64,8 +68,12 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
             union_meter.update(reduced_union.cpu().numpy())
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
+    iou_class_dict = {}
+    for num, iou in enumerate(iou_class):
+        iou_class_dict[filtered_labels[num].name] = round(iou * 100, 2).item()
+        
     mIOU = np.mean(iou_class) * 100.0
-    return_dict['iou_class'] = iou_class
+    return_dict['iou_class'] = iou_class_dict
     return_dict['mIOU'] = mIOU
     return_dict['pred'] = pred
     return_dict['conf'] = conf

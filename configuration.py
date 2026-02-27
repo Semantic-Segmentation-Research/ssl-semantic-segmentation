@@ -58,7 +58,7 @@ class TrainConfig:
     lr_period: int       = 400
     label_lr_decay: float = 0.9
     unlabel_lr_decay: float = 0.98
-    resume: bool        = True
+    resume: bool        = False
     
     @dataclass
     class LossConfig:

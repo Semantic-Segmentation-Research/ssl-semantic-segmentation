@@ -31,7 +31,7 @@ from util.utils import count_params, init_log
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
-from util.vectorized_region_prop import vectorized_region_propagation
+# from tabulate import tabulate
 
 from configuration import DataConfig, TrainConfig, ModelConfig
 
@@ -211,7 +211,8 @@ def main():
         for step, ((img_l_w, mask_l_w, l_image_path), 
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
-            # if step == 1: break
+            if step == 1: break
+            
             start_event.record()
             
             img_l_w, mask_l_w = img_l_w.cuda(non_blocking=True), mask_l_w.cuda(non_blocking=True)
@@ -385,7 +386,7 @@ def main():
         torch.cuda.empty_cache()
         # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
         res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=eval_mode)
-        class_IOU = res_val['iou_class']
+        # class_IOU = res_val['iou_class']
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/loss/total loss": total_loss.compute(), 
@@ -439,8 +440,12 @@ def main():
 
 
         logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-        logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
-
+        # logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
+        # table = [(k, v) for k, v in res_val['iou_class'].items()]
+        # print(tabulate(table, headers=["Class", "Value"], tablefmt="grid"))
+        summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in res_val['iou_class'].items())
+        print(f"[Class IoU]: {summary} \n")
+                
         if res_val['mIOU'] > previous_best and rank == 0:
             # model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
             
