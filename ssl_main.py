@@ -211,7 +211,7 @@ def main():
         for step, ((img_l_w, mask_l_w, l_image_path), 
                    (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
-            if step == 1: break
+            # if step == 1: break
             
             start_event.record()
             
