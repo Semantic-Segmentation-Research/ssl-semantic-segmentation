@@ -1,3 +1,5 @@
 /exp/
 /pretrained/
 /.idea/
+__pycache__/
+experiments/

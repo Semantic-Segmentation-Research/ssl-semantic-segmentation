@@ -28,14 +28,17 @@ def setup_distributed(backend="nccl", port=None):
         os.environ["LOCAL_RANK"] = str(rank % num_gpus)
         os.environ["RANK"] = str(rank)
     else:
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-
+        # rank = int(os.environ["RANK"])
+        # world_size = int(os.environ["WORLD_SIZE"])
+        rank = int(os.environ.get("RANK", 0)) # 0
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
     torch.cuda.set_device(rank % num_gpus)
 
-    dist.init_process_group(
-        backend=backend,
-        world_size=world_size,
-        rank=rank,
-    )
+    # dist.init_process_group(
+    #     backend=backend,
+    #     world_size=world_size,
+    #     rank=rank,
+    # )
     return rank, world_size

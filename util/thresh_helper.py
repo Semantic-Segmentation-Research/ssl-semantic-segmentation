@@ -1,6 +1,14 @@
 import torch
 import torch.distributed as dist
 
+def _is_dist_ready() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+def _world_size() -> int:
+    return dist.get_world_size() if _is_dist_ready() else 1
+
+def _rank() -> int:
+    return dist.get_rank() if _is_dist_ready() else 0
 
 class ThreshController:
     def __init__(self, nclass, momentum, thresh_init=0.85):
@@ -8,18 +16,27 @@ class ThreshController:
         self.thresh_global = torch.tensor(thresh_init).cuda()
         self.momentum = momentum
         self.nclass = nclass
-        self.gpu_num = dist.get_world_size()
+        # self.gpu_num = dist.get_world_size()
+        self.gpu_num = _world_size()
+        self.rank = _rank()
 
     def new_global_mask_pooling(self, pred, ignore_mask=None):
         return_dict = {}
         n, c, h, w = pred.shape
         pred_gather = torch.zeros([n * self.gpu_num, c, h, w]).cuda()
-        dist.all_gather_into_tensor(pred_gather, pred)
+        # dist.all_gather_into_tensor(pred_gather, pred)
+        
+        if self.rank != 0:
+            dist.all_gather_into_tensor(pred_gather, pred)
+            
         pred = pred_gather
         if ignore_mask is not None:
             ignore_mask_gather = torch.zeros([n * self.gpu_num, h, w]).cuda().long()
-            dist.all_gather_into_tensor(ignore_mask_gather, ignore_mask)
+            # dist.all_gather_into_tensor(ignore_mask_gather, ignore_mask)
+            if self.rank != 0:
+                dist.all_gather_into_tensor(ignore_mask_gather, ignore_mask)
             ignore_mask = ignore_mask_gather
+            
         mask_pred = torch.argmax(pred, dim=1)
         pred_softmax = pred.softmax(dim=1)
         pred_conf = pred_softmax.max(dim=1)[0]

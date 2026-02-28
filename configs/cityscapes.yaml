@@ -1,12 +1,14 @@
 # arguments for dataset
 dataset: cityscapes
 nclass: 19
-crop_size: 801
-data_root: your/cityscape/path
+# crop_size: 801
+crop_size: 352
+data_root: /home/dev/data
 
 # arguments for training
 epochs: 240
-batch_size: 2
+# batch_size: 2
+batch_size: 8
 lr: 0.005  # 4GPUs
 lr_multi: 1.0
 criterion:
@@ -18,7 +20,10 @@ criterion:
 conf_thresh: 0.0
 
 # arguments for model
-backbone: resnet101
+# backbone: resnet101
+backbone: resnet50
 multi_grid: False
 replace_stride_with_dilation: [False, True, True]
 dilations: [12, 24, 36]
+pretrain: False
+thresh_init: 0.85

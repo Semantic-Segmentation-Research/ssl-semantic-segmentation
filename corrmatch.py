@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import os.path as osp
 import pprint
 
 from tqdm import tqdm
@@ -29,16 +30,16 @@ from util.thresh_helper import ThreshController
 from einops import rearrange
 import random
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-parser.add_argument('--config', type=str, required=True)
-parser.add_argument('--labeled-id-path', type=str, required=True)
-parser.add_argument('--unlabeled-id-path', type=str, required=True)
-parser.add_argument('--save-path', type=str, required=True)
+parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
+parser.add_argument('--labeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt"))
+parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt"))
+parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
-parser.add_argument('--port', default=None, type=int)
-
+parser.add_argument('--port', default=0, type=int)
+parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch'), type=str)
 
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
@@ -62,7 +63,7 @@ def main():
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    rank, word_size = setup_distributed(port=args.port)
+    rank, world_size = setup_distributed(port=args.port)
 
     if rank == 0:
         logger.info('{}\n'.format(pprint.pformat(cfg)))
@@ -82,22 +83,27 @@ def main():
                      {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
                       'lr': cfg['lr'] * cfg['lr_multi']}], lr=cfg['lr'], momentum=0.9, weight_decay=1e-4)
 
-    local_rank = int(os.environ["LOCAL_RANK"])
+    # local_rank = int(os.environ["LOCAL_RANK"])
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
-
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
-                                                      output_device=local_rank, find_unused_parameters=False)
+    
+    if world_size > 1:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     if cfg['criterion']['name'] == 'CELoss':
-        criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).cuda(local_rank)
+        # criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).cuda(local_rank)
+        criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).to(device, non_blocking=True)
     elif cfg['criterion']['name'] == 'OHEM':
-        criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).cuda(local_rank)
+        # criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).cuda(local_rank)
+        criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).to(device, non_blocking=True)
     else:
         raise NotImplementedError('%s criterion is not implemented' % cfg['criterion']['name'])
 
-    criterion_u = nn.CrossEntropyLoss(reduction='none').cuda(local_rank)
-    criterion_kl = nn.KLDivLoss(reduction='none').cuda(local_rank)
+    # criterion_u = nn.CrossEntropyLoss(reduction='none').cuda(local_rank)
+    # criterion_kl = nn.KLDivLoss(reduction='none').cuda(local_rank)
+    criterion_u = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
+    criterion_kl = nn.KLDivLoss(reduction='none').to(device, non_blocking=True)
 
     trainset_u = SemiDataset(cfg['dataset'], cfg['data_root'], 'train_u',
                              cfg['crop_size'], args.unlabeled_id_path)
@@ -105,19 +111,20 @@ def main():
                              cfg['crop_size'], args.labeled_id_path, nsample=len(trainset_u.ids))
     valset = SemiDataset(cfg['dataset'], cfg['data_root'], 'val')
 
-    trainsampler_l = torch.utils.data.distributed.DistributedSampler(trainset_l)
+    use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
+    trainsampler_l = torch.utils.data.distributed.DistributedSampler(trainset_l) if use_ddp else None
     trainloader_l = DataLoader(trainset_l, batch_size=cfg['batch_size'],
                                pin_memory=False, num_workers=4, drop_last=True, sampler=trainsampler_l)
-    trainsampler_u = torch.utils.data.distributed.DistributedSampler(trainset_u)
+    trainsampler_u = torch.utils.data.distributed.DistributedSampler(trainset_u) if use_ddp else None
     trainloader_u = DataLoader(trainset_u, batch_size=cfg['batch_size'],
                                pin_memory=False, num_workers=4, drop_last=True, sampler=trainsampler_u)
-    valsampler = torch.utils.data.distributed.DistributedSampler(valset)
+    valsampler = torch.utils.data.distributed.DistributedSampler(valset) if use_ddp else None
     valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4,
                            drop_last=False, sampler=valsampler)
 
     total_iters = len(trainloader_u) * cfg['epochs']
     previous_best = 0.0
-    thresh_controller = ThreshController(nclass=21, momentum=0.999, thresh_init=cfg['thresh_init'])
+    thresh_controller = ThreshController(nclass=cfg['nclass'], momentum=0.999, thresh_init=cfg['thresh_init'])
 
     for epoch in range(cfg['epochs']):
         if rank == 0:
@@ -129,9 +136,13 @@ def main():
         total_loss_corr_ce, total_loss_corr_u = 0.0, 0.0
         total_mask_ratio = 0.0
 
-        trainloader_l.sampler.set_epoch(epoch)
-        trainloader_u.sampler.set_epoch(epoch)
-
+        # trainloader_l.sampler.set_epoch(epoch)
+        # trainloader_u.sampler.set_epoch(epoch)
+        if use_ddp:
+            trainloader_l.sampler.set_epoch(epoch)
+            trainloader_u.sampler.set_epoch(epoch)
+            
+            
         loader = zip(trainloader_l, trainloader_u, trainloader_u)
 
         if rank == 0:
@@ -141,6 +152,8 @@ def main():
                 (img_u_w, img_u_s1, _, ignore_mask, cutmix_box1, _),
                 (img_u_w_mix, img_u_s1_mix, _, ignore_mask_mix, _, _)) in enumerate(loader):
 
+            if i == 1: break
+            
             img_x, mask_x = img_x.cuda(), mask_x.cuda()
             img_u_w = img_u_w.cuda()
             img_u_s1, ignore_mask = img_u_s1.cuda(), ignore_mask.cuda()
@@ -283,15 +296,18 @@ def main():
         if rank == 0:
             tbar.close()
 
-        if cfg['dataset'] == 'cityscapes':
-            eval_mode = 'center_crop' if epoch < cfg['epochs'] - 20 else 'sliding_window'
-        else:
-            eval_mode = 'original'
+        # if cfg['dataset'] == 'cityscapes':
+        #     eval_mode = 'center_crop' if epoch < cfg['epochs'] - 20 else 'sliding_window'
+        # else:
+        #     eval_mode = 'original'
+        eval_mode = 'original'
+        
         torch.cuda.empty_cache()
-        res_val = evaluate(model, valloader, eval_mode, cfg)
+        res_val = evaluate(model, rank, valloader, eval_mode, cfg)
         mIOU = res_val['mIOU']
         class_IOU = res_val['iou_class']
-        torch.distributed.barrier()
+        if rank != 0:
+            torch.distributed.barrier()
 
         if rank == 0:
             logger.info('***** Evaluation {} ***** >>>> meanIOU: {:.4f} \n'.format(eval_mode, mIOU))
@@ -301,10 +317,16 @@ def main():
             if previous_best != 0:
                 os.remove(os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], previous_best)))
             previous_best = mIOU
-            torch.save(model.module.state_dict(), os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
-        torch.distributed.barrier()
+            # torch.save(model.module.state_dict(), os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
+            torch.save({"epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()}, osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
+
+        if rank != 0:
+            torch.distributed.barrier()
         torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", 0)
     main()

@@ -18,6 +18,15 @@ class SemiDataset(Dataset):
         self.root = root
         self.mode = mode
         self.size = size
+        
+        self.ignore_label = 255
+
+        self.id_to_trainid = {-1: self.ignore_label, 0: self.ignore_label, 1: self.ignore_label, 2: self.ignore_label,
+                              3: self.ignore_label, 4: self.ignore_label, 5: self.ignore_label, 6: self.ignore_label,
+                              7: 0, 8: 1, 9: self.ignore_label, 10: self.ignore_label, 11: 2, 12: 3, 13: 4,
+                              14: self.ignore_label, 15: self.ignore_label, 16: self.ignore_label, 17: 5,
+                              18: self.ignore_label, 19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
+                              28: 15, 29: self.ignore_label, 30: self.ignore_label, 31: 16, 32: 17, 33: 18}
 
         if mode == 'train_l' or mode == 'train_u':
             with open(id_path, 'r') as f:
@@ -27,14 +36,20 @@ class SemiDataset(Dataset):
                 random.shuffle(self.ids)
                 self.ids = self.ids[:nsample]
         else:
-            with open('partitions/%s/val.txt' % name, 'r') as f:
+            with open('/home/dev/CorrMatch/partitions/%s/val.txt' % name, 'r') as f:
                 self.ids = f.read().splitlines()
 
     def __getitem__(self, item):
         id = self.ids[item]
         img = Image.open(os.path.join(self.root, id.split(' ')[0])).convert('RGB')
         mask = Image.fromarray(np.array(Image.open(os.path.join(self.root, id.split(' ')[1]))))
-
+        mask = np.array(mask)
+        
+        gt_copy = mask.copy()
+        for key, value in self.id_to_trainid.items():
+            gt_copy[mask == key] = value
+        mask = Image.fromarray(gt_copy.astype(np.uint8))
+        
         if self.mode == 'val':
             img_ori = np.array(img)
             img, mask = normalize(img, mask)
