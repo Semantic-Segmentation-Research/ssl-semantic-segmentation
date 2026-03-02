@@ -38,7 +38,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.6_custom_resnet50_xca"
+    model_name: str     = "v1.1.7_custom_resnet50_xca"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -60,6 +60,8 @@ class TrainConfig:
     unlabel_lr_decay: float = 0.98
     resume: bool        = False
     
+    eval_mode: str      = 'original'
+    
     @dataclass
     class LossConfig:
         name: str = "OHEM" # OHEM, CELoss
@@ -79,3 +81,7 @@ class TrainConfig:
         
         blur_prob: float = 0.5
         cutmix_prob: float = 0.5
+        
+        # random_scale: list = field(default_factory=lambda: [0.5, 2.0])
+        # gaussian_blur_prob: float = 0.5
+        # color_jitter: bool = True

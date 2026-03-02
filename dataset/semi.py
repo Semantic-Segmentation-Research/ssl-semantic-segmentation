@@ -100,9 +100,27 @@ class SemiDataset(Dataset):
         mask = torch.from_numpy(np.array(mask)).long()
         ignore_mask[mask == 254] = self.ignore_label # ignore_mask는 mask에서 254픽셀부분을 255로 변환
         
+        # # --- any additional helper for augmentation ----------------------------------
+        # # in dataset/transform.py
+        # def random_scale(img, scale_range):
+        #     scale = random.uniform(scale_range[0], scale_range[1])
+        #     return F.interpolate(img.unsqueeze(0), scale_factor=scale, mode='bilinear',
+        #                         align_corners=True)[0]
+
+        # def random_gaussian_blur(img, prob):
+        #     if random.random() < prob:
+        #         return img.filter(ImageFilter.GaussianBlur(radius=random.random()*2))
+        #     return img
+
+        # def color_jitter(img, cfg):
+        #     return torchvision.transforms.ColorJitter(cfg.brightness,
+        #                                             cfg.contrast,
+        #                                             cfg.saturation,
+        #                                             cfg.hue)(img)
         return img, ignore_mask, cutmix_box
     
-    
+        
+
     
 # class SemiDataset(Dataset):
 #     def __init__(self, root, mode, valid_path=None, id_path=None, nsample=None):

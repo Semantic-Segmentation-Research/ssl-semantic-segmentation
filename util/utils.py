@@ -1,5 +1,5 @@
 import numpy as np
-import logging # 파이썬 표준 로깅 모듈
+import logging
 import os
 import os.path as osp
 import shutil
@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from collections import namedtuple
 
 
+# region - Label Table
+# ========================== Label Table ==========================
 Label = namedtuple( 'Label' , [
 
     'name'        , # The identifier of this label, e.g. 'car', 'person', ... .
@@ -84,52 +86,55 @@ labels = [
     Label(  'bicycle'              , 33 ,       18 , 'vehicle'         , 7       , True         , False        , (119, 11, 32) ),
     Label(  'license plate'        , -1 ,       -1 , 'vehicle'         , 7       , False        , True         , (  0,  0,142) ),
 ]
+# =================================================================
+
+
 
 def count_params(model):
     param_num = sum(p.numel() for p in model.parameters())
     return param_num / 1e6
 
 
-def color_map(dataset='pascal'):
-    cmap = np.zeros((256, 3), dtype='uint8')
+# def color_map(dataset='pascal'):
+#     cmap = np.zeros((256, 3), dtype='uint8')
 
-    if dataset == 'pascal' or dataset == 'coco':
-        def bitget(byteval, idx):
-            return (byteval & (1 << idx)) != 0
+#     if dataset == 'pascal' or dataset == 'coco':
+#         def bitget(byteval, idx):
+#             return (byteval & (1 << idx)) != 0
 
-        for i in range(256):
-            r = g = b = 0
-            c = i
-            for j in range(8):
-                r = r | (bitget(c, 0) << 7-j)
-                g = g | (bitget(c, 1) << 7-j)
-                b = b | (bitget(c, 2) << 7-j)
-                c = c >> 3
+#         for i in range(256):
+#             r = g = b = 0
+#             c = i
+#             for j in range(8):
+#                 r = r | (bitget(c, 0) << 7-j)
+#                 g = g | (bitget(c, 1) << 7-j)
+#                 b = b | (bitget(c, 2) << 7-j)
+#                 c = c >> 3
 
-            cmap[i] = np.array([r, g, b])
+#             cmap[i] = np.array([r, g, b])
 
-    elif dataset == 'cityscapes':
-        cmap[0] = np.array([128, 64, 128])
-        cmap[1] = np.array([244, 35, 232])
-        cmap[2] = np.array([70, 70, 70])
-        cmap[3] = np.array([102, 102, 156])
-        cmap[4] = np.array([190, 153, 153])
-        cmap[5] = np.array([153, 153, 153])
-        cmap[6] = np.array([250, 170, 30])
-        cmap[7] = np.array([220, 220, 0])
-        cmap[8] = np.array([107, 142, 35])
-        cmap[9] = np.array([152, 251, 152])
-        cmap[10] = np.array([70, 130, 180])
-        cmap[11] = np.array([220, 20, 60])
-        cmap[12] = np.array([255,  0,  0])
-        cmap[13] = np.array([0,  0, 142])
-        cmap[14] = np.array([0,  0, 70])
-        cmap[15] = np.array([0, 60, 100])
-        cmap[16] = np.array([0, 80, 100])
-        cmap[17] = np.array([0,  0, 230])
-        cmap[18] = np.array([119, 11, 32])
+#     elif dataset == 'cityscapes':
+#         cmap[0] = np.array([128, 64, 128])
+#         cmap[1] = np.array([244, 35, 232])
+#         cmap[2] = np.array([70, 70, 70])
+#         cmap[3] = np.array([102, 102, 156])
+#         cmap[4] = np.array([190, 153, 153])
+#         cmap[5] = np.array([153, 153, 153])
+#         cmap[6] = np.array([250, 170, 30])
+#         cmap[7] = np.array([220, 220, 0])
+#         cmap[8] = np.array([107, 142, 35])
+#         cmap[9] = np.array([152, 251, 152])
+#         cmap[10] = np.array([70, 130, 180])
+#         cmap[11] = np.array([220, 20, 60])
+#         cmap[12] = np.array([255,  0,  0])
+#         cmap[13] = np.array([0,  0, 142])
+#         cmap[14] = np.array([0,  0, 70])
+#         cmap[15] = np.array([0, 60, 100])
+#         cmap[16] = np.array([0, 80, 100])
+#         cmap[17] = np.array([0,  0, 230])
+#         cmap[18] = np.array([119, 11, 32])
 
-    return cmap
+#     return cmap
 
 
 class AverageMeter(object):
@@ -251,158 +256,14 @@ def colorize_mask(mask):
 
     return new_mask
 
-
-def vectorized_region_propagation_no_loop(mask, segments, corr_map, thresh, num_classes, device=None):
-    """
-    완전히 loop-free한 버전 (scatter 연산 활용)
-    매우 큰 배치에 대해 더 효율적일 수 있음
-    """
-    B, C, H, W = corr_map.shape
-    device = device or corr_map.device
+# region - initialization
+def init_non_backbone(m):
+    import torch.nn as nn
     
-    # Flatten
-    mask_flat = mask.view(B, -1)  # (B, H*W)
-    seg_flat = segments.view(B, C, -1)  # (B, C, H*W)
-    seg_ori_flat = corr_map.view(B, C, -1)  # (B, C, H*W)
-    
-    # ============ 유효성 및 top_class 계산 (위와 동일) ============
-    seg_count = seg_flat.sum(dim=2)  # (B, C)
-    seg_ori_count = seg_ori_flat.sum(dim=2)  # (B, C)
-    
-    high_conf_ratio = torch.where(
-        seg_ori_count > 0,
-        seg_count / seg_ori_count.float(),
-        torch.zeros_like(seg_count, dtype=torch.float32)
-    )
-    valid_seg = (seg_count > 0) & (high_conf_ratio >= thresh)
-    
-    # 클래스 분포 계산
-    mask_onehot = F.one_hot(mask_flat.long(), num_classes=num_classes).float()
-    mask_onehot = mask_onehot.permute(0, 2, 1)
-    class_count = torch.matmul(mask_onehot, seg_flat.float())
-    
-    top_class_count, top_class_idx = class_count.max(dim=1)
-    total_in_seg = seg_count.float()
-    top_ratio = torch.where(
-        total_in_seg > 0,
-        top_class_count / total_in_seg,
-        torch.zeros_like(top_class_count)
-    )
-    
-    update_mask = valid_seg & (top_ratio >= thresh)  # (B, C)
-    
-    # ============ Loop-free 업데이트 (scatter 방식) ============
-    refined_mask = mask_flat.clone()
-    
-    # batch index와 segment index 생성
-    b_indices, c_indices = torch.meshgrid(
-        torch.arange(B, device=device),
-        torch.arange(C, device=device),
-        indexing='ij'
-    )
-    
-    # 업데이트할 위치들만 필터링
-    valid_b = b_indices[update_mask]  # 1D
-    valid_c = c_indices[update_mask]  # 1D
-    
-    # 해당하는 top_class 추출
-    new_classes = top_class_idx[update_mask]  # 1D
-    
-    # 각 (b, c) 쌍에 대해 seg_ori_flat[b, c]가 True인 위치에 new_classes 할당
-    for i in range(len(valid_b)):
-        b = valid_b[i].item()
-        c = valid_c[i].item()
-        seg_ori_mask = seg_ori_flat[b, c]
-        refined_mask[b][seg_ori_mask] = new_classes[i].item()
-    
-    refined_mask = refined_mask.view(B, H, W)
-    
-    return refined_mask
-
-
-def vectorized_region_propagation(mask, segments, corr_map, thresh, num_classes, device=None):
-    """
-    Region-propagation을 GPU에서 완전 벡터화로 수행
-    
-    Args:
-        mask: (B, H, W) - 예측 마스크
-        segments: (B, C, H, W) - 신뢰 가능 영역 (boolean)
-        corr_map: (B, C, H, W) - correspondence map (boolean)
-        thresh: float - 임계값
-        num_classes: int - 클래스 수
-        device: torch.device
-    
-    Returns:
-        refined_mask: (B, H, W) - refinement된 마스크
-    """
-    B, C, H, W = corr_map.shape
-    device = device or corr_map.device
-    
-    # Flatten 공간 차원
-    mask_flat = mask.view(B, -1)  # (B, H*W)
-    seg_flat = segments.view(B, C, -1)  # (B, C, H*W)
-    seg_ori_flat = corr_map.view(B, C, -1)  # (B, C, H*W)
-    
-    # ============ 1단계: 각 segment 유효성 검사 ============
-    # 각 segment의 픽셀 카운트
-    seg_count = seg_flat.sum(dim=2)  # (B, C)
-    seg_ori_count = seg_ori_flat.sum(dim=2)  # (B, C)
-    
-    # high_conf_ratio 계산 (seg의 유효성)
-    high_conf_ratio = torch.where(
-        seg_ori_count > 0,
-        seg_count / seg_ori_count.float(),
-        torch.zeros_like(seg_count, dtype=torch.float32)
-    )
-    
-    valid_seg = (seg_count > 0) & (high_conf_ratio >= thresh)  # (B, C)
-    
-    # ============ 2단계: 각 segment별 클래스 분포 계산 ============
-    # one-hot 인코딩으로 클래스별 카운트 계산
-    mask_onehot = F.one_hot(mask_flat.long(), num_classes=num_classes).float()  # (B, H*W, num_classes)
-    
-    # einsum으로 효율적 계산: (B, C, H*W) x (B, H*W, num_classes) -> (B, C, num_classes)
-    class_count = torch.einsum('bch,bhn->bcn', seg_flat.float(), mask_onehot)  # (B, C, num_classes)
-    
-    # 각 segment별 top class와 그 카운트 계산
-    top_class_count, top_class_idx = class_count.max(dim=-1)  # (B, C)
-    
-    # Top class의 비율 계산
-    total_in_seg = seg_count.float()
-    top_ratio = torch.where(
-        total_in_seg > 0,
-        top_class_count / total_in_seg,
-        torch.zeros_like(top_class_count)
-    )
-    
-    # ============ 3단계: 최종 업데이트 조건 ============
-    # valid_seg AND top_ratio > thresh
-    update_mask = valid_seg & (top_ratio >= thresh)  # (B, C)
-    
-    # ============ 4단계: 배치 연산으로 마스크 업데이트 (완전 벡터화) ============
-    refined_mask = mask_flat.clone()  # (B, H*W)
-    
-    # update_mask에서 True인 위치의 (B, C) 인덱스 추출
-    b_idx, c_idx = torch.where(update_mask)  # 1D 텐서들
-    
-    if len(b_idx) > 0:
-        # 배치 연산: 모든 업데이트를 한 번에 처리
-        # seg_ori_flat[b_idx, c_idx]는 각 (b, c) 쌍의 segment_ori 마스크
-        # top_class_idx[b_idx, c_idx]는 각 (b, c) 쌍의 새로운 클래스
+    if isinstance(m, (nn.Conv2d, nn.Linear)):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         
-        # 각 (b, c)에 대해 segment_ori에 해당하는 위치들을 찾기
-        for i in range(len(b_idx)):
-            b = b_idx[i].item()
-            c = c_idx[i].item()
-            
-            # segment_ori 영역 마스크 (H*W,)
-            seg_ori_mask = seg_ori_flat[b, c] > 0.5
-            new_class = top_class_idx[b, c].item()
-            
-            # 해당 위치들에 new_class 할당
-            refined_mask[b][seg_ori_mask] = new_class
-    
-    # 원본 shape로 복원
-    refined_mask = refined_mask.view(B, H, W)
-    
-    return refined_mask
+    elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+        

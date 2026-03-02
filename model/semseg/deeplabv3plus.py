@@ -51,7 +51,11 @@ class DeepLabV3Plus(nn.Module):
                                                 out_ch=128,
                                                 output_size=self.tcfg.crop_size,
                                                 nclass=mcfg.num_classes)
-
+        
+        self.aux_head = context.SegHead(in_ch=mcfg.nf * 4 * mcfg.bttln_exp,
+                                        mid_ch=256,
+                                        out_ch=mcfg.num_classes)
+        
     # region forward
     def forward(self, x, mode='train'):
         result_dict = {}
@@ -93,6 +97,9 @@ class DeepLabV3Plus(nn.Module):
             result_dict['corr_out'] = result_c4corr["corr_dec_out"]
             result_dict['out_fp'] = out_fp
             # ---------------------------------------------------------
+            
+            aux_out = self.aux_head(c3, size=(image_height, image_width))
+            result_dict['aux_out'] = aux_out
             
         elif mode == 'test':
             c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)

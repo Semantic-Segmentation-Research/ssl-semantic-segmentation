@@ -88,7 +88,10 @@ def main():
     init_seeds(0, False)
 
     model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
-
+    for name, module in model.named_modules():
+        if name.startswith('backbone') or name == '': continue  
+        utils.init_non_backbone(module)
+    
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
@@ -173,6 +176,7 @@ def main():
 
     previous_best = 0.0
     total_loss              = MeanMetric().to(device=device)
+    total_aux_loss          = MeanMetric().to(device=device)
     total_label_loss        = MeanMetric().to(device=device)
     total_label_loss_corr   = MeanMetric().to(device=device)
     total_loss_s            = MeanMetric().to(device=device)
@@ -196,6 +200,7 @@ def main():
         
     # region - Train
     for epoch in range(start_epoch, tcfg.num_epochs):
+        total_aux_loss.reset()
         total_loss.reset()
         total_label_loss.reset()
         total_label_loss_corr.reset()
@@ -327,6 +332,10 @@ def main():
             # loss_u_w_fp: UniMatch에서 가져온 loss인 것 같음.
             # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_u_s * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
             label_loss = label_loss + label_loss_corr
+            if 'aux_out' in results:
+                aux_loss = criterion_l(results['aux_out'][:tcfg.batch_size], mask_l_w)
+                label_loss += 0.4 * aux_loss
+                
             unlabel_loss = 0.5*loss_u_s + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
             
             weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.num_epochs/2, dtype=torch.float32))
@@ -338,6 +347,7 @@ def main():
             loss.backward()
             optimizer.step()
 
+            total_aux_loss.update(aux_loss.detach())
             total_loss.update(loss.detach())
             total_label_loss.update(label_loss.detach())
             total_label_loss_corr.update(label_loss_corr.detach())
@@ -370,7 +380,7 @@ def main():
             
             if step % 10 == 0 and rank == 0:
                 hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s | lr: {lr:5.4f}"
-                loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
+                loss_info = f"total loss: {total_loss.compute():.3f}, loss label loss: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
                 print('-'*100)
@@ -381,15 +391,17 @@ def main():
         # if tcfg.dataset == 'cityscapes':
         #     eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
         # else:
-        eval_mode = 'original'
+        # eval_mode = 'original'
             
         torch.cuda.empty_cache()
         # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
-        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=eval_mode)
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=tcfg.eval_mode)
         # class_IOU = res_val['iou_class']
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/loss/total loss": total_loss.compute(), 
+                                          "Optimization/loss/aux loss": total_aux_loss.compute(),
+                                          "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss corr": total_label_loss_corr.compute(), 
                                           "Optimization/loss/unlabel strong loss": total_loss_s.compute(), 
@@ -439,7 +451,7 @@ def main():
                       epoch=epoch)
 
 
-        logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
+        logger.info(f'***** Evaluation {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
         # logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
         # table = [(k, v) for k, v in res_val['iou_class'].items()]
         # print(tabulate(table, headers=["Class", "Value"], tablefmt="grid"))
