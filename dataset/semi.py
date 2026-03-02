@@ -87,9 +87,9 @@ class SemiDataset(Dataset):
         
     
     def apply_strong_augm(self, img, mask):
-        # img_s = deepcopy(img)
         if random.random() < 0.8:
             img = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img)
+            
         img = transforms.RandomGrayscale(p=0.2)(img)
         img = trf.blur(img, p=0.5)
         cutmix_box = trf.obtain_cutmix_box(img.size[0], p=0.5)

@@ -33,20 +33,20 @@ class ASPPPooling(nn.Module):
 
 # region - ASPPModule
 class ASPPModule(nn.Module):
-    def __init__(self, in_channels, out_channels, atrous_rates):
+    def __init__(self, in_ch, out_ch, atrous_rates):
         super(ASPPModule, self).__init__()
         rate1, rate2, rate3 = atrous_rates
 
-        self.b0 = nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False),
-                                nn.BatchNorm2d(out_channels),
+        self.b0 = nn.Sequential(nn.Conv2d(in_ch, out_ch, 1, bias=False),
+                                nn.BatchNorm2d(out_ch),
                                 nn.ReLU(True))
-        self.b1 = ASPPConv(in_channels, out_channels, rate1)
-        self.b2 = ASPPConv(in_channels, out_channels, rate2)
-        self.b3 = ASPPConv(in_channels, out_channels, rate3)
-        self.b4 = ASPPPooling(in_channels, out_channels)
+        self.b1 = ASPPConv(in_ch, out_ch, rate1)
+        self.b2 = ASPPConv(in_ch, out_ch, rate2)
+        self.b3 = ASPPConv(in_ch, out_ch, rate3)
+        self.b4 = ASPPPooling(in_ch, out_ch)
 
-        self.project = nn.Sequential(nn.Conv2d(5 * out_channels, out_channels, 1, bias=False),
-                                     nn.BatchNorm2d(out_channels),
+        self.project = nn.Sequential(nn.Conv2d(5 * out_ch, out_ch, 1, bias=False),
+                                     nn.BatchNorm2d(out_ch),
                                      nn.ReLU(True))
 
     def forward(self, x):
@@ -123,12 +123,12 @@ class Corr(nn.Module):
 
 # region - XCA
 class CrossCovarianceAtt(nn.Module):
-    def __init__(self, high_ch, in_ch, out_ch, output_size, nclass=21):
+    def __init__(self, reduc_ch, in_ch, out_ch, output_size, nclass=21):
         super(CrossCovarianceAtt, self).__init__()
 
         self.output_size = output_size
         self.reduction = nn.Sequential(
-            nn.Conv2d(high_ch, in_ch, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.Conv2d(reduc_ch, in_ch, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(in_ch),
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.1),
@@ -160,18 +160,19 @@ class CrossCovarianceAtt(nn.Module):
         xca = torch.bmm(attn, v)
         xca = F.softmax(xca, dim=1)
         
+        # xca_conf_reshape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        # xca_conf_reshape = self.proj(xca_conf_reshape)
+
         if aug_type =='weak':
             result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca, enc_height, enc_width, dec_height, dec_width)
         
         xca_conf_reshape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         xca_conf_reshape = self.proj(xca_conf_reshape)
         
-        # 7번 수식에서 C_hat (8, 128, 384, 384)
         dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
         corr_dec_out = dec_out * xca_conf_reshape
         corr_dec_out = F.interpolate(corr_dec_out, size=(self.output_size, self.output_size), mode="bilinear", align_corners=True)
         # 5번 수식
-        # (8,19,48,48)
         result_dict['corr_dec_out'] = corr_dec_out
         
         return result_dict
@@ -199,8 +200,8 @@ class ASPP(nn.Module):
     def __init__(self, mcfg, high_ch, low_ch, ratio=8):
         super().__init__()
         
-        self.aspp = ASPPModule(in_channels=high_ch, 
-                               out_channels=high_ch // ratio, 
+        self.aspp = ASPPModule(in_ch=high_ch, 
+                               out_ch=high_ch // ratio, 
                                atrous_rates=mcfg.dilations)
         
         self.reduce = nn.Sequential(nn.Conv2d(high_ch // ratio, low_ch, 1, bias=False),
@@ -215,6 +216,45 @@ class ASPP(nn.Module):
 
         return feat1, feat2
 
+
+
+class MultiLevelFusionModule(nn.Module):
+    def __init__(self, mcfg, tcfg):
+        super(MultiLevelFusionModule, self).__init__()
+        self.crop_size = tcfg.crop_size
+        
+        self.aspp1 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp,     out_ch=128, atrous_rates=[15, 17, 19])
+        self.aspp2 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 2, out_ch=128, atrous_rates=[11, 13, 15])
+        self.aspp3 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 4, out_ch=128, atrous_rates=[7, 9, 11])
+        self.aspp4 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 8, out_ch=128, atrous_rates=[3, 5, 7])
+
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(128 * 4, 128, kernel_size=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+
+        self.classifier = nn.Conv2d(128, mcfg.num_classes, kernel_size=1, bias=False)
+
+
+    def forward(self, features):
+        c1, c2, c3, c4 = features
+        
+        m1 = F.interpolate(self.aspp1(c1), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
+        m2 = F.interpolate(self.aspp2(c2), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
+        m3 = F.interpolate(self.aspp3(c3), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
+        m4 = F.interpolate(self.aspp4(c4), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
+
+        combined = torch.cat([m1, m2, m3, m4], dim=1)
+        fused = self.fusion_conv(combined)
+        
+        out = self.classifier(fused)
+        return out
+    
+    
 # region - SegHead
 class SegHead(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
