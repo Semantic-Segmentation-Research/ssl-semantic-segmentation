@@ -18,7 +18,7 @@ class DataConfig:
 class ModelConfig:
     backbone:    str    = "resnet50"
     num_classes: int    = 19
-    dilations: list     = field(default_factory=lambda: [7, 9, 11]) # +2 하면 receptive field
+    dilations: list     = field(default_factory=lambda: [12, 24, 36])
     replace_stride_with_dilation: list = field(default_factory=lambda: [False, False, True])
     norm_layer: str     = "BatchNorm2d"
     
@@ -38,7 +38,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.7_custom_resnet50_xca"
+    model_name: str     = "v1.1.8_custom_resnet50_xca"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -46,7 +46,7 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 1e-4 # 5e-3
+    lr: float           = 5e-4 # 5e-3
     lr_multi: float     = 1.0
     num_epochs: int     = 800
     num_workers: int    = 8
@@ -68,6 +68,8 @@ class TrainConfig:
         ignore_index: int = 255
         ohem_threshold: float = 0.9
         ohem_min_kept: int = 100000
+        
+        aux_loss_weight: float = 1.0 # 0.4
         
         
     @dataclass

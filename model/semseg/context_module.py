@@ -159,9 +159,6 @@ class CrossCovarianceAtt(nn.Module):
 
         xca = torch.bmm(attn, v)
         xca = F.softmax(xca, dim=1)
-        
-        # xca_conf_reshape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
-        # xca_conf_reshape = self.proj(xca_conf_reshape)
 
         if aug_type =='weak':
             result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca, enc_height, enc_width, dec_height, dec_width)

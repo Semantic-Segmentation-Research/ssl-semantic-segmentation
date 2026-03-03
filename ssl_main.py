@@ -180,6 +180,7 @@ def main():
     total_label_loss        = MeanMetric().to(device=device)
     total_label_loss_corr   = MeanMetric().to(device=device)
     total_loss_s            = MeanMetric().to(device=device)
+    total_loss_kl           = MeanMetric().to(device=device)
     total_loss_w_fp         = MeanMetric().to(device=device)
     total_loss_corr_u       = MeanMetric().to(device=device)
     
@@ -205,7 +206,8 @@ def main():
         total_label_loss.reset()
         total_label_loss_corr.reset()
         total_loss_s.reset()
-        total_loss_kl = 0.0
+        # total_loss_kl = 0.0
+        total_loss_kl.reset()
         total_mask_ratio = 0.0
         
         if use_ddp:
@@ -234,7 +236,7 @@ def main():
                 results = model(torch.cat((img_l_w, img_u_w, img_u_s)))
                 
                 pred_lw, pred_uw = results['out'].split([label_batch, unlabel_batch])
-                pred_lw_corr, pred_uw_corr = results['corr_dec_out'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
+                pred_lw_corr, pred_uw_corr = results['corr_out'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
                 pred_uw_fp = results['out_fp'][label_batch:]
                 # pred_uw_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
                 pred_uw_corr_map: bool = results['binary_norm_corr_map'][label_batch:].detach()
@@ -348,7 +350,7 @@ def main():
             label_loss = label_loss + label_loss_corr
             if 'aux_out' in results:
                 aux_loss = criterion_l(results['aux_out'][:tcfg.batch_size], mask_l_w)
-                label_loss += 0.4 * aux_loss
+                label_loss += tcfg.LossConfig.aux_loss_weight * aux_loss
                 
             unlabel_loss = 0.5*loss_u_s + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
             
@@ -367,7 +369,8 @@ def main():
             total_label_loss.update(label_loss.detach())
             total_label_loss_corr.update(label_loss_corr.detach())
             total_loss_s.update(loss_u_s.detach())
-            total_loss_kl += loss_u_kl.item()
+            # total_loss_kl += loss_u_kl.item()
+            total_loss_kl.update(loss_u_kl.detach())
             total_loss_w_fp.update(loss_u_w_fp.detach())
             total_loss_corr_u.update(loss_u_corr.detach())
             total_mask_ratio += ((pred_conf_uw >= thresh_global) & (ignore_mask != 255)).sum().item() / \
@@ -389,7 +392,6 @@ def main():
             
             elapsed_time = start_event.elapsed_time(end_event) / 1000.0
             time_left = (num_total_steps - iters) * elapsed_time
-            # time_left = time.strftime("%H:%M:%S", time.gmtime(time_left))
             time_left = str(datetime.timedelta(seconds=int(time_left)))
             
             
@@ -406,12 +408,10 @@ def main():
         # if tcfg.dataset == 'cityscapes':
         #     eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
         # else:
-        # eval_mode = 'original'
+            # eval_mode = 'original'
             
         torch.cuda.empty_cache()
-        # res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, aug_layer, eval_mode="original")
         res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=tcfg.eval_mode)
-        # class_IOU = res_val['iou_class']
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/loss/total loss": total_loss.compute(), 
@@ -467,15 +467,10 @@ def main():
 
 
         logger.info(f'***** Evaluation {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-        # logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
-        # table = [(k, v) for k, v in res_val['iou_class'].items()]
-        # print(tabulate(table, headers=["Class", "Value"], tablefmt="grid"))
         summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in res_val['iou_class'].items())
         print(f"[Class IoU]: {summary} \n")
                 
         if res_val['mIOU'] > previous_best and rank == 0:
-            # model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
-            
             if previous_best != 0:
                 os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
