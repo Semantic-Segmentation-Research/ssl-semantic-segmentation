@@ -5,16 +5,35 @@ from einops import rearrange
 
 
 
-
+# region - ASPPConv
+# def ASPPConv(in_channels, out_channels, atrous_rate):
+#     block = nn.Sequential(
+#         nn.Conv2d(in_channels, out_channels, 3, 
+#                   padding=atrous_rate,
+#                   dilation=atrous_rate, 
+#                   bias=False),
+#         nn.BatchNorm2d(out_channels),
+#         nn.ReLU(True)
+#         )
+#     return block
 def ASPPConv(in_channels, out_channels, atrous_rate):
-    block = nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, 
-                                    padding=atrous_rate,
-                                    dilation=atrous_rate, bias
-                                    =False),
-                          nn.BatchNorm2d(out_channels),
-                          nn.ReLU(True))
+    block = nn.Sequential(
+        # depthwise conv: groups=in_channels keeps channels separate
+        nn.Conv2d(in_channels,
+                  in_channels,
+                  kernel_size=3,
+                  padding=atrous_rate,
+                  dilation=atrous_rate,
+                  groups=in_channels,
+                  bias=False),
+        nn.BatchNorm2d(in_channels),
+        nn.ReLU(True),
+        # pointwise conv to mix channels and adjust to desired out_channels
+        nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+        nn.BatchNorm2d(out_channels),
+        nn.ReLU(True),
+    )
     return block
-
 
 # region - ASPPPooling
 class ASPPPooling(nn.Module):
@@ -194,12 +213,12 @@ class CrossCovarianceAtt(nn.Module):
 
 # region - ASPP
 class ASPP(nn.Module):
-    def __init__(self, mcfg, high_ch, low_ch, ratio=8):
+    def __init__(self, high_ch, low_ch, dilations, ratio=8):
         super().__init__()
         
         self.aspp = ASPPModule(in_ch=high_ch, 
                                out_ch=high_ch // ratio, 
-                               atrous_rates=mcfg.dilations)
+                               atrous_rates=dilations)
         
         self.reduce = nn.Sequential(nn.Conv2d(high_ch // ratio, low_ch, 1, bias=False),
                                     nn.BatchNorm2d(low_ch),
@@ -214,41 +233,39 @@ class ASPP(nn.Module):
         return feat1, feat2
 
 
-
-class MultiLevelFusionModule(nn.Module):
-    def __init__(self, mcfg, tcfg):
-        super(MultiLevelFusionModule, self).__init__()
-        self.crop_size = tcfg.crop_size
+# region - MultiLevelASPP
+class MultiLevelASPP(nn.Module):
+    def __init__(self, out_size, in_ch, in_mul, ratio, dilations=None, nclass=19):
+        super(MultiLevelASPP, self).__init__()
+        self.out_size = out_size
+        self.nclass = nclass
         
-        self.aspp1 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp,     out_ch=128, atrous_rates=[15, 17, 19])
-        self.aspp2 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 2, out_ch=128, atrous_rates=[11, 13, 15])
-        self.aspp3 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 4, out_ch=128, atrous_rates=[7, 9, 11])
-        self.aspp4 = ASPPModule(in_ch=mcfg.nf * mcfg.bttln_exp * 8, out_ch=128, atrous_rates=[3, 5, 7])
+        r1, r2, r3, r4 = in_mul
+        self.aspp1 = ASPPModule(in_ch=in_ch * r1, out_ch=in_ch//ratio, atrous_rates=dilations)
+        self.aspp2 = ASPPModule(in_ch=in_ch * r2, out_ch=in_ch//ratio, atrous_rates=dilations)
+        self.aspp3 = ASPPModule(in_ch=in_ch * r3, out_ch=in_ch//ratio, atrous_rates=dilations)
+        self.aspp4 = ASPPModule(in_ch=in_ch * r4, out_ch=in_ch//ratio, atrous_rates=dilations)
 
-        self.fusion_conv = nn.Sequential(
-            nn.Conv2d(128 * 4, 128, kernel_size=1, bias=False),
-            nn.BatchNorm2d(128),
+        mid_ch = in_ch//ratio //2
+        self.fuse = nn.Sequential(
+            nn.Conv2d(in_ch//ratio * 4, mid_ch, kernel_size=1, bias=False), # 채널 압축
+            nn.BatchNorm2d(mid_ch),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(mid_ch, nclass, kernel_size=1, bias=True) # 최종 출력 (BN 제거)
         )
-
-        self.classifier = nn.Conv2d(128, mcfg.num_classes, kernel_size=1, bias=False)
-
-
+        
     def forward(self, features):
         c1, c2, c3, c4 = features
         
-        m1 = F.interpolate(self.aspp1(c1), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
-        m2 = F.interpolate(self.aspp2(c2), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
-        m3 = F.interpolate(self.aspp3(c3), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
-        m4 = F.interpolate(self.aspp4(c4), size=(self.crop_size, self.crop_size), mode='bilinear', align_corners=True)
+        m1 = F.interpolate(self.aspp1(c1), size=self.out_size, mode="bilinear", align_corners=True)
+        m2 = F.interpolate(self.aspp2(c2), size=self.out_size, mode="bilinear", align_corners=True)
+        m3 = F.interpolate(self.aspp3(c3), size=self.out_size, mode="bilinear", align_corners=True)
+        m4 = F.interpolate(self.aspp4(c4), size=self.out_size, mode="bilinear", align_corners=True)
 
-        combined = torch.cat([m1, m2, m3, m4], dim=1)
-        fused = self.fusion_conv(combined)
+        # m = (m1 + m2 + m3 + m4)
+        m = torch.cat([m1, m2, m3, m4], dim=1)
+        out = self.fuse(m)
         
-        out = self.classifier(fused)
         return out
     
     

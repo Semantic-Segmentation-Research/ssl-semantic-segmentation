@@ -95,13 +95,15 @@ def main():
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
-    optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
-                     {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-                      'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
-    # optimizer = Adam([
-    #     {"params": model.backbone.parameters(), 'lr': tcfg.lr},
-    #     {"params": [param for name, param in model.named_parameters() if 'backbone' not in name], "lr": tcfg.lr * tcfg.lr_multi}
-    # ])
+    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
+    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    optimizer = Adam([
+        {"params": model.backbone.parameters(), 'lr': tcfg.lr},
+        {"params": [param for name, param in model.named_parameters() if 'backbone' not in name], "lr": tcfg.lr * tcfg.lr_multi}
+    ])
+    # TODO: EMA 적용 예정
+    
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
     
@@ -206,7 +208,6 @@ def main():
         total_label_loss.reset()
         total_label_loss_corr.reset()
         total_loss_s.reset()
-        # total_loss_kl = 0.0
         total_loss_kl.reset()
         total_mask_ratio = 0.0
         
@@ -234,6 +235,8 @@ def main():
             
             with torch.amp.autocast('cuda'):
                 results = model(torch.cat((img_l_w, img_u_w, img_u_s)))
+                
+                pred_mask_lw = results['mask_lw']
                 
                 pred_lw, pred_uw = results['out'].split([label_batch, unlabel_batch])
                 pred_lw_corr, pred_uw_corr = results['corr_out'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
@@ -348,8 +351,8 @@ def main():
             # loss_u_w_fp: UniMatch에서 가져온 loss인 것 같음.
             # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_u_s * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
             label_loss = label_loss + label_loss_corr
-            if 'aux_out' in results:
-                aux_loss = criterion_l(results['aux_out'][:tcfg.batch_size], mask_l_w)
+            if 'mask_lw' in results:
+                aux_loss = criterion_l(pred_mask_lw.float(), mask_l_w)
                 label_loss += tcfg.LossConfig.aux_loss_weight * aux_loss
                 
             unlabel_loss = 0.5*loss_u_s + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp

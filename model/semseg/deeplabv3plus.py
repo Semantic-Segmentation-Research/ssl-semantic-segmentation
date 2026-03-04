@@ -26,21 +26,22 @@ class DeepLabV3Plus(nn.Module):
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        self.c14_aspp_module = context.ASPP(mcfg, 
-                                 high_ch= mcfg.nf * 8 * mcfg.bttln_exp,
-                                 low_ch=36,
-                                 ratio=8)
-        self.c12_aspp_module = context.ASPP(mcfg, 
-                                 high_ch= mcfg.nf * 2 * mcfg.bttln_exp,
-                                 low_ch=36,
-                                 ratio=2)
+        self.c14_aspp_module = context.ASPP(high_ch= mcfg.nf * 8 * mcfg.bttln_exp,
+                                            low_ch=36,
+                                            dilations=mcfg.dilations,
+                                            ratio=8)
+        self.c12_aspp_module = context.ASPP(high_ch= mcfg.nf * 2 * mcfg.bttln_exp,
+                                            low_ch=36,
+                                            dilations=mcfg.dilations,
+                                            ratio=2)
+        
+        
         self.decoder = context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
                                            mid_ch=256,
                                            out_ch=mcfg.num_classes)
         self.us_decoder = context.SegHead(in_ch= 36 + 2*(mcfg.nf * mcfg.bttln_exp),
                                            mid_ch=256,
                                            out_ch=mcfg.num_classes)
-        
         self.c4_corr = context.CrossCovarianceAtt(reduc_ch=mcfg.nf * 8 * mcfg.bttln_exp,
                                                 in_ch=256,
                                                 out_ch=128,
@@ -52,10 +53,19 @@ class DeepLabV3Plus(nn.Module):
                                                 output_size=self.tcfg.crop_size,
                                                 nclass=mcfg.num_classes)
         
-        self.aux_head = context.SegHead(in_ch=mcfg.nf * 4 * mcfg.bttln_exp,
-                                        mid_ch=256,
-                                        out_ch=mcfg.num_classes)
+        # self.aux_head = context.SegHead(in_ch=mcfg.nf * mcfg.bttln_exp * 4,
+        #                                 mid_ch=256,
+        #                                 out_ch=mcfg.num_classes)
         
+        self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
+                                                    in_ch=mcfg.nf*mcfg.bttln_exp,
+                                                    in_mul=[1, 2, 4, 8],
+                                                    ratio=2,
+                                                    dilations=mcfg.dilations,
+                                                    nclass=mcfg.num_classes)
+        
+    
+    
     # region forward
     def forward(self, x, mode='train'):
         result_dict = {}
@@ -64,7 +74,8 @@ class DeepLabV3Plus(nn.Module):
         c1, c2, c3, c4 = self.backbone.base_forward(x)
         if mode =='train':
             c1_lw_uw, c1_u_s = torch.split(c1, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            _, c2_u_s = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c2_lw_uw, c2_u_s = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c3_lw_uw, c3_u_s = torch.split(c3, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             c4_lw_uw, c4_u_s = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
             # ---------------- Unlabel Strong Part ----------------
@@ -98,8 +109,14 @@ class DeepLabV3Plus(nn.Module):
             result_dict['out_fp'] = out_fp
             # ---------------------------------------------------------
             
-            aux_out = self.aux_head(c3, size=(image_height, image_width))
-            result_dict['aux_out'] = aux_out
+            # ----------------------- label Part -----------------------
+            mask_lw = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
+                                                   c2_lw_uw[:self.tcfg.batch_size],
+                                                   c3_lw_uw[:self.tcfg.batch_size],
+                                                   c4_lw_uw[:self.tcfg.batch_size]])
+            
+            result_dict['mask_lw'] = mask_lw
+            # ---------------------------------------------------------
             
         elif mode == 'test':
             c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)
