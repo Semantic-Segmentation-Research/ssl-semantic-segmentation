@@ -36,7 +36,7 @@ class SemiDataset(Dataset):
                 random.shuffle(self.ids)
                 self.ids = self.ids[:nsample]
         else:
-            with open('/home/dev/CorrMatch/partitions/%s/val.txt' % name, 'r') as f:
+            with open('/home/dev/ssl-semantic-segmentation/partitions/%s/val.txt' % name, 'r') as f:
                 self.ids = f.read().splitlines()
 
     def __getitem__(self, item):
