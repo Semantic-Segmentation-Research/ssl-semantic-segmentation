@@ -126,7 +126,17 @@ def main():
     previous_best = 0.0
     thresh_controller = ThreshController(nclass=cfg['nclass'], momentum=0.999, thresh_init=cfg['thresh_init'])
 
-    for epoch in range(cfg['epochs']):
+    start_epoch = 0
+    latest_model = os.listdir(args.save_path)[-1]
+    checkpoint = torch.load(osp.join(args.save_path, latest_model), map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    
+    logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
+    
+    
+    for epoch in range(start_epoch, cfg['epochs']):
         if rank == 0:
             logger.info('===========> Epoch: {:}, LR: {:.4f}, Previous best: {:.2f}'.format(
                 epoch, optimizer.param_groups[0]['lr'], previous_best))
