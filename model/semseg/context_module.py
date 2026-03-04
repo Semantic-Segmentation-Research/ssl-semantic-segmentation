@@ -2,8 +2,8 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-
-
+from timm.layers import DropPath
+from collections import OrderedDict
 
 # region - ASPPConv
 # def ASPPConv(in_channels, out_channels, atrous_rate):
@@ -142,21 +142,23 @@ class Corr(nn.Module):
 
 # region - XCA
 class CrossCovarianceAtt(nn.Module):
-    def __init__(self, reduc_ch, in_ch, out_ch, output_size, nclass=21):
+    def __init__(self, reduc_in_ch, reduc_out_ch, mid_ch, output_size, nclass=21):
         super(CrossCovarianceAtt, self).__init__()
 
         self.output_size = output_size
         self.reduction = nn.Sequential(
-            nn.Conv2d(reduc_ch, in_ch, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.BatchNorm2d(in_ch),
+            nn.Conv2d(reduc_in_ch, reduc_out_ch, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(reduc_out_ch),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
+            nn.Dropout2d(0.1)
         )
         
-        self.qkv_conv = nn.Conv2d(in_ch, out_ch * 3, kernel_size=1, stride=1, padding=0, bias=True)
-        self.dwconv = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, groups=out_ch)
-        self.proj   = nn.Conv2d(out_ch, nclass, kernel_size=3, padding=1)
+        self.kv_conv = nn.Conv2d(reduc_out_ch, mid_ch * 2, kernel_size=1, stride=1, padding=0, bias=True)
+        self.q_conv = nn.Conv2d(reduc_out_ch, mid_ch, kernel_size=1, stride=1, padding=0, bias=True)
+        self.dwconv = nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1, groups=mid_ch)
+        self.proj   = nn.Conv2d(mid_ch, nclass, kernel_size=3, padding=1)
         
+        self.temperature = nn.Parameter(torch.ones(1, mid_ch, 1))
         
     # Encoder output & Decoder output
     def forward(self, enc_out, dec_out, aug_type='weak'):
@@ -164,19 +166,23 @@ class CrossCovarianceAtt(nn.Module):
         
         proj_feats = self.reduction(enc_out)
         
-        _, _, enc_height, enc_width = proj_feats.shape
+        enc_height, enc_width = proj_feats.shape[-2:]
         dec_height, dec_width = dec_out.shape[-2:]
         
-        qkv = self.qkv_conv(proj_feats).flatten(2)
-        q, k, v= qkv.chunk(3, dim=1)
+        q    = self.q_conv(dec_out.detach())
+        q    = F.interpolate(q, (enc_height, enc_width), mode='bilinear', align_corners=True)
+        q    = q.flatten(2)
+        kv   = self.kv_conv(proj_feats).flatten(2)
+        k, v = kv.chunk(2, dim=1)
         
-        q = F.normalize(q, p=2, dim=-1)
-        k = F.normalize(k, p=2, dim=-1)
+        q = F.normalize(q, p=2, dim=1)
+        k = F.normalize(k, p=2, dim=1)
         
         attn = torch.bmm(q, k.transpose(1, 2))
+        attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
-
         xca = torch.bmm(attn, v)
+
         xca = F.softmax(xca, dim=1)
 
         if aug_type =='weak':
@@ -210,6 +216,87 @@ class CrossCovarianceAtt(nn.Module):
         
         return norm_corr_map
     
+
+# region - FlowAtt
+class FlowAtt(nn.Module):
+    """
+    label의 정보를 unlabel에게 전달
+    """
+    def __init__(self, channel, reduc_ch, exp_ratio, drop_path=0.1):
+        super(FlowAtt, self).__init__()
+
+        # -------------------------- StarNet Module --------------------------
+        self.star_layer = nn.Sequential(OrderedDict([
+            ('reduction', nn.Sequential(
+                nn.Conv2d(channel, reduc_ch, kernel_size=1, stride=1, padding=0, bias=True),
+                nn.BatchNorm2d(reduc_ch),
+                nn.ReLU6(inplace=True))
+             ),
+            ('dw3x3', nn.Conv2d(reduc_ch, reduc_ch, kernel_size=3, stride=1, groups=reduc_ch, padding=1, bias=True)),
+            ('dw3x3_bn', nn.BatchNorm2d(reduc_ch)),
+            ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
+            ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
+            ('g', nn.Conv2d(reduc_ch*exp_ratio, channel, kernel_size=1, stride=1, padding=0, bias=True)),
+            ('g_bn', nn.BatchNorm2d(reduc_ch*exp_ratio)),
+            ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
+            ('relu', nn.ReLU6(inplace=True)),
+            ('drop_path', DropPath(drop_path) if drop_path > 0. else nn.Identity())
+        ]))
+        
+        for m in self.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        # ------------------------------------------------------------------
+        
+        # -------------------------- XCA Module --------------------------
+        self.xca_layer = nn.Sequential(OrderedDict([
+            ('kv_conv', nn.Conv2d(channel, channel * 2, kernel_size=1, stride=1, padding=0, bias=True)),
+            ('q_conv', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=True)),
+            ('dwconv', nn.Conv2d(channel, channel, kernel_size=3, padding=1, groups=channel)),
+        ]))
+        self.temperature = nn.Parameter(0.01 * torch.ones(1, channel, 1))
+        # --------------------------------------------------------------------
+        
+        
+    def star(self, feat):
+        input = feat
+        
+        x = self.star_layer.reduction(feat)
+        x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
+        x = self.star_layer.relu(x1) * x2
+        x = self.star_layer.dwconv2(self.star_layer.g(x))
+        
+        x = input + self.star_layer.drop_path(x)
+                
+        return x
+    
+    def xca(self, feat1, feat2):
+        b, _, h, w = feat1.shape
+        
+        q = self.xca_layer.q_conv(feat2.detach()).flatten(2)
+        kv = self.xca_layer.kv_conv(feat1).flatten(2)
+        k, v = kv.chunk(2, dim=1)
+        
+        q = F.normalize(q, p=2, dim=1)
+        k = F.normalize(k, p=2, dim=1)
+        
+        attn = torch.bmm(q, k.transpose(1, 2)).float()
+        attn /= self.temperature
+        attn = F.softmax(attn, dim=-1)
+        xca = torch.bmm(attn, v)
+
+        xca = xca.view(b, -1, h, w)
+        
+        return xca
+
+    def forward(self, feat1, feat2=None):
+        feat1 = self.star(feat1)
+        xca = self.xca(feat1, feat2)
+        
+        return xca
+
+
 
 # region - ASPP
 class ASPP(nn.Module):
@@ -253,6 +340,7 @@ class MultiLevelASPP(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_ch, nclass, kernel_size=1, bias=True) # 최종 출력 (BN 제거)
         )
+        
         
     def forward(self, features):
         c1, c2, c3, c4 = features

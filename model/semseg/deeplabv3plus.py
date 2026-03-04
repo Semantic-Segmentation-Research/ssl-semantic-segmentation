@@ -1,4 +1,4 @@
-import model.backbone.custom_resnet as resnet
+import model.backbone.resnet as resnet
 from model.backbone.xception import xception
 
 import torch
@@ -9,6 +9,7 @@ from einops import rearrange
 import os.path as osp
 from dataset import transform as dtf
 from model.semseg import context_module as context
+from collections import OrderedDict
 
 # region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
@@ -26,45 +27,58 @@ class DeepLabV3Plus(nn.Module):
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        self.c14_aspp_module = context.ASPP(high_ch= mcfg.nf * 8 * mcfg.bttln_exp,
-                                            low_ch=36,
-                                            dilations=mcfg.dilations,
-                                            ratio=8)
-        self.c12_aspp_module = context.ASPP(high_ch= mcfg.nf * 2 * mcfg.bttln_exp,
-                                            low_ch=36,
-                                            dilations=mcfg.dilations,
-                                            ratio=2)
+        self.decoder_layer = nn.Sequential(OrderedDict([
+            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*13,
+                                       mid_ch=256,
+                                       out_ch=mcfg.num_classes)),
+            ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
+                                     mid_ch=256,
+                                     out_ch=mcfg.num_classes))
+        ]))
         
-        
-        self.decoder = context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
-                                           mid_ch=256,
-                                           out_ch=mcfg.num_classes)
-        self.us_decoder = context.SegHead(in_ch= 36 + 2*(mcfg.nf * mcfg.bttln_exp),
-                                           mid_ch=256,
-                                           out_ch=mcfg.num_classes)
-        self.c4_corr = context.CrossCovarianceAtt(reduc_ch=mcfg.nf * 8 * mcfg.bttln_exp,
-                                                in_ch=256,
-                                                out_ch=128,
+        self.xca_layer = nn.Sequential(OrderedDict([
+            ("c4", context.CrossCovarianceAtt(reduc_in_ch=mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
+                                                reduc_out_ch=mcfg.num_classes,
+                                                mid_ch=128,
                                                 output_size=self.tcfg.crop_size,
-                                                nclass=mcfg.num_classes)
-        self.c2_corr = context.CrossCovarianceAtt(reduc_ch=mcfg.nf * 2 * mcfg.bttln_exp,
-                                                in_ch=256,
-                                                out_ch=128,
-                                                output_size=self.tcfg.crop_size,
-                                                nclass=mcfg.num_classes)
-        
-        # self.aux_head = context.SegHead(in_ch=mcfg.nf * mcfg.bttln_exp * 4,
-        #                                 mid_ch=256,
-        #                                 out_ch=mcfg.num_classes)
-        
+                                                nclass=mcfg.num_classes))
+        ]))
         self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
                                                     in_ch=mcfg.nf*mcfg.bttln_exp,
-                                                    in_mul=[1, 2, 4, 8],
+                                                    in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
                                                     ratio=2,
                                                     dilations=mcfg.dilations,
                                                     nclass=mcfg.num_classes)
         
-    
+        self.flow_layer = nn.Sequential(OrderedDict([
+            ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
+                                  reduc_ch=mcfg.bttln_exp,
+                                  exp_ratio=4)),
+            ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
+                                  exp_ratio=4)),
+            ("c3", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
+                                  exp_ratio=4)),
+            ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
+                                  exp_ratio=4)
+             )]))
+        
+        self.aspp_layer = nn.Sequential(OrderedDict([
+            ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
+                                 low_ch=36,
+                                 dilations=mcfg.dilations,
+                                 ratio=6)),
+            ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
+                                 low_ch=36,
+                                 dilations=mcfg.dilations,
+                                 ratio=2))]))
+        
+        self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
+        self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
+        self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
+        self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
     
     # region forward
     def forward(self, x, mode='train'):
@@ -73,36 +87,45 @@ class DeepLabV3Plus(nn.Module):
 
         c1, c2, c3, c4 = self.backbone.base_forward(x)
         if mode =='train':
-            c1_lw_uw, c1_u_s = torch.split(c1, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            c2_lw_uw, c2_u_s = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            c3_lw_uw, c3_u_s = torch.split(c3, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
-            c4_lw_uw, c4_u_s = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c1_lw_uw, c1_us = torch.split(c1, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c2_lw_uw, c2_us = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c3_lw_uw, c3_us = torch.split(c3, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c4_lw_uw, c4_us = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
             # ---------------- Unlabel Strong Part ----------------
-            c1_u_s1, c4_u_s1 = self.c14_aspp_module(c1_u_s, c4_u_s)
-            c1_u_s2, c2_u_s1 = self.c12_aspp_module(c1_u_s, c2_u_s)
-            c1_u_s = c1_u_s1 + c1_u_s2
+            c1_us = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_us)
+            c2_us = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_us)
+            c3_us = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_us)
+            c4_us = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_us)
             
-            feature = torch.cat([c1_u_s, c2_u_s1, c4_u_s1], dim=1)
-            out_u_s = self.us_decoder(feature, size=(image_height, image_width))
-            result_dict['out_u_s'] = out_u_s
+            c1_us = F.interpolate(c1_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             
-            result_corr = self.c4_corr(enc_out=c4_u_s, dec_out=out_u_s, aug_type='strong')
-            result_dict['corr_out_u_s'] = result_corr["corr_dec_out"]
+            # c1_us1, c4_us1 = self.aspp_layer.c14(c1_us, c4_us)
+            # c1_us2, c2_us1 = self.aspp_layer.c12(c1_us, c2_us)
+            # c1_us = c1_us1 + c1_us2
+            
+            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
+            out_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['out_us'] = out_us
+            
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=out_us, aug_type='strong')
+            result_dict['corr_out_us'] = result_corr["corr_dec_out"]
             # ---------------------------------------------------------
             
             # ---------------- label+unlabel Weak Part ----------------
-            c1_lw_uw_fp, c4_lw_uw_fp = self.c14_aspp_module(
+            c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
                 torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
                 torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
                 )
             
             feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
-            outs            = self.decoder(feature, size=(image_height, image_width))
+            outs            = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
             out, out_fp = outs.chunk(2)
-            result_c4corr = self.c4_corr(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
-            # result_c2corr = self.c2_corr(enc_out=c2_lw_uw, dec_out=out, aug_type='weak')
+            result_c4corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
             
             result_dict['binary_norm_corr_map'] = result_c4corr["binary_norm_corr_map"]
             result_dict['corr_out'] = result_c4corr["corr_dec_out"]
@@ -110,18 +133,37 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            mask_lw = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
+            output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
                                                    c2_lw_uw[:self.tcfg.batch_size],
                                                    c3_lw_uw[:self.tcfg.batch_size],
                                                    c4_lw_uw[:self.tcfg.batch_size]])
             
-            result_dict['mask_lw'] = mask_lw
+            c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
+            c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
+            c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
+            c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            
+            c1_lw = self.c1_cls(c1_lw)
+            c2_lw = self.c2_cls(c2_lw)
+            c3_lw = self.c3_cls(c3_lw)
+            c4_lw = self.c4_cls(c4_lw)
+            
+            c1_lw = F.interpolate(c1_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            c2_lw = F.interpolate(c2_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            c3_lw = F.interpolate(c3_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            c4_lw = F.interpolate(c4_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            
+            result_dict['c1_lw'] = c1_lw
+            result_dict['c2_lw'] = c2_lw
+            result_dict['c3_lw'] = c3_lw
+            result_dict['c4_lw'] = c4_lw
+            result_dict['mask_lw'] = output_mask
             # ---------------------------------------------------------
             
         elif mode == 'test':
-            c1_u_s, c4_u_s  = self.c14_aspp_module(c1, c4)
-            feature         = torch.cat([c1_u_s, c4_u_s], dim=1)
-            out             = self.decoder(feature, size=(image_height, image_width))
+            c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
+            feature         = torch.cat([c1_us, c4_us], dim=1)
+            out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
             
         result_dict['out'] = out
         

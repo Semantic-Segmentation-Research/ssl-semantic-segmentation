@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from model.backbone import clayers
 
 __all__ = ['ResNet', 'resnet50', 'resnet101']
 
@@ -14,9 +14,8 @@ def conv1x1(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 
+# region - Bottleneck
 class Bottleneck(nn.Module):
-    # expansion = 4
-
     def __init__(self, inplanes, planes, expansion, stride=1, downsample=None, groups=1,
                  base_width=64, dilation=1, norm_layer=None):
         super(Bottleneck, self).__init__()
@@ -57,10 +56,8 @@ class Bottleneck(nn.Module):
         return out
 
 
+# region - ResNet
 class ResNet(nn.Module):
-
-    # def __init__(self, block, layers, zero_init_residual=False, groups=1,
-    #              width_per_group=64, multi_grid=False, replace_stride_with_dilation=None, norm_layer=None):
     def __init__(self, block, layers, mcfg):
         super(ResNet, self).__init__()
 
@@ -70,40 +67,32 @@ class ResNet(nn.Module):
         if mcfg.norm_layer == "BatchNorm2d": 
             self._norm_layer = nn.BatchNorm2d
 
-        # self.inplanes = 128
         self.dilation = 1
+        
         if mcfg.replace_stride_with_dilation is None:
             mcfg.replace_stride_with_dilation = [False, False, False]
+        
         if len(mcfg.replace_stride_with_dilation) != 3:
             raise ValueError("replace_stride_with_dilation should be None "
                              "or a 3-element tuple, got {}".format(mcfg.replace_stride_with_dilation))
+            
         self.groups = mcfg.groups
         self.base_width = mcfg.width_per_group
         
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(3, mcfg.nf, kernel_size=3, stride=2, padding=1, bias=False),
-            self._norm_layer(mcfg.nf),
-            # nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
-            # norm_layer(32),
-            nn.ReLU(inplace=True),
-            # nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=3, stride=1, padding=1, groups=mcfg.nf, bias=False),
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=1, stride=1, padding=0, bias=False),
-            self._norm_layer(mcfg.nf),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=3, stride=1, padding=1, groups=mcfg.nf, bias=False),
-            nn.Conv2d(mcfg.nf, mcfg.nf*2, kernel_size=1, stride=1, padding=0, bias=False),
-        )
-        self.bn1 = self._norm_layer(mcfg.nf*2)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        self.gamma_layer1 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*2)
+        self.gamma_layer2 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*mcfg.bttln_exp)
+
+        self.init_conv = clayers.InitConv(mcfg)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.ds_conv = nn.Conv2d(mcfg.nf*2, mcfg.nf*2, kernel_size=3, stride=2, padding=1, bias=False)
         
         self.layer1 = self._make_layer(block, mcfg.nf, layers[0])
-        self.layer2 = self._make_layer(block, mcfg.nf*2, layers[1], stride=2,
+        self.layer2 = self._make_layer(block, mcfg.nf*mcfg.enc_c2_ratio, layers[1], stride=2,
                                        dilate=mcfg.replace_stride_with_dilation[0])
-        self.layer3 = self._make_layer(block, mcfg.nf*4, layers[2], stride=2,
+        self.layer3 = self._make_layer(block, mcfg.nf*mcfg.enc_c3_ratio, layers[2], stride=2,
                                        dilate=mcfg.replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(block, mcfg.nf*8, layers[3], stride=2,
+        self.layer4 = self._make_layer(block, mcfg.nf*mcfg.enc_c4_ratio, layers[3], stride=2,
                                        dilate=mcfg.replace_stride_with_dilation[2], multi_grid=mcfg.multi_grid)
 
         for m in self.modules():
@@ -118,7 +107,7 @@ class ResNet(nn.Module):
                 if isinstance(m, Bottleneck):
                     nn.init.constant_(m.bn3.weight, 0)
 
-
+    # region make_layer
     def _make_layer(self, block, planes, num_block, stride=1, dilate=False, multi_grid=False):
         downsample = None
         norm_layer = self._norm_layer
@@ -151,12 +140,16 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def base_forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
+        x   = self.init_conv(x)
+        x_g = self.gamma_layer1(x)
+        x   = torch.add(x, x_g)
 
-        c1 = self.layer1(x)
+        x  = self.ds_conv(x)
+        
+        c1   = self.layer1(x)
+        c1_g = self.gamma_layer2(c1)
+        c1   = torch.add(c1, c1_g)
+
         c2 = self.layer2(c1)
         c3 = self.layer3(c2)
         c4 = self.layer4(c3)

@@ -21,6 +21,7 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
 
+    print("Start evaluation...")
     with torch.no_grad():
         for img, mask, image_path in loader:
             img = img.cuda(non_blocking=True)

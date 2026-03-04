@@ -22,23 +22,29 @@ class ModelConfig:
     replace_stride_with_dilation: list = field(default_factory=lambda: [False, False, True])
     norm_layer: str     = "BatchNorm2d"
     
-    nf: int       = 64
-    bttln_nf: int  = 128
+    input_channel : int = 3
+    nf: int       = 48
+    bttln_nf: int  = 96
     bttln_exp: int = 3
     groups: int     = 1
     width_per_group:int = 64
     num_blocks: list = field(default_factory=lambda: [3, 4, 6, 3])
-
+    init_value: float = 1e-6
+    
     multi_grid: bool = False
     zero_init_residual: bool = False
     
+    enc_c1_ratio: int   = 1
+    enc_c2_ratio: int   = 2
+    enc_c3_ratio: int   = 4
+    enc_c4_ratio: int   = 6
     
     
 # region - Train
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.8_custom_resnet50_xca"
+    model_name: str     = "v1.1.9_L2U"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -46,7 +52,8 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 5e-4 # 5e-3
+    # lr: float           = 5e-4 # 5e-3
+    lr: float           = 1e-3 # 5e-3
     lr_multi: float     = 1.0
     num_epochs: int     = 800
     num_workers: int    = 8

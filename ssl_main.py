@@ -20,7 +20,6 @@ import matplotlib
 matplotlib.use('agg')
 import yaml
 
-# from dataset.semi import SemiDataset, GPUAugmentation
 from dataset.semi import SemiDataset
 from ssl_tensorboard import SSLTensorBoard
 from model.semseg.deeplabv3plus import DeepLabV3Plus
@@ -31,7 +30,6 @@ from util.utils import count_params, init_log
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
-# from tabulate import tabulate
 
 from configuration import DataConfig, TrainConfig, ModelConfig
 
@@ -55,9 +53,9 @@ def init_seeds(seed=0, cuda_deterministic=False):
 
 
 # region - test
-# def test(model, dataloader, img_u_s, cutmix_box):
-    # img_u_w, img_u_s2, ignore_mask, _, _ = next(iter(dataloader))
-def test(model, img_u_w, img_u_s, ignore_mask, cutmix_box):
+# def test(model, dataloader, img_us, cutmix_box):
+    # img_u_w, img_us2, ignore_mask, _, _ = next(iter(dataloader))
+def test(model, img_u_w, img_us, ignore_mask, cutmix_box):
     indices = torch.randperm(img_u_w.size(0), device=device)
     ignore_mask = ignore_mask[indices]
     
@@ -69,10 +67,10 @@ def test(model, img_u_w, img_u_s, ignore_mask, cutmix_box):
         prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
         conf_u_w, mask_u_w = prob_u_w.max(dim=1) # pseudo label
         
-        img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
-            img_u_s[indices][cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
+        img_us[cutmix_box.unsqueeze(1).expand(img_us.shape) == 1] = \
+            img_us[indices][cutmix_box.unsqueeze(1).expand(img_us.shape) == 1]
         
-        return conf_u_w, mask_u_w, img_u_s, ignore_mask
+        return conf_u_w, mask_u_w, img_us, ignore_mask
 
 
 # region - main
@@ -95,13 +93,13 @@ def main():
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
-    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
-    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
-    optimizer = Adam([
-        {"params": model.backbone.parameters(), 'lr': tcfg.lr},
-        {"params": [param for name, param in model.named_parameters() if 'backbone' not in name], "lr": tcfg.lr * tcfg.lr_multi}
-    ])
+    optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
+                     {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+                      'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    # optimizer = Adam([
+    #     {"params": model.backbone.parameters(), 'lr': tcfg.lr},
+    #     {"params": [param for name, param in model.named_parameters() if 'backbone' not in name], "lr": tcfg.lr * tcfg.lr_multi}
+    # ])
     # TODO: EMA 적용 예정
     
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
@@ -110,6 +108,7 @@ def main():
     if world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
+    # region loss
     if tcfg.LossConfig.name == 'CELoss':
         criterion_l = nn.CrossEntropyLoss(ignore_index=tcfg.LossConfig.ignore_index).to(device, non_blocking=True)
     elif tcfg.LossConfig.name == 'OHEM':
@@ -120,6 +119,8 @@ def main():
     else:
         raise NotImplementedError(f'{tcfg.LossConfig.name} criterion is not implemented')
 
+    criterion_feat_l = nn.CrossEntropyLoss(ignore_index=tcfg.LossConfig.ignore_index).to(device, non_blocking=True)
+    
     criterion_u = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
     criterion_kl = nn.KLDivLoss(reduction='none').to(device, non_blocking=True)
     
@@ -217,7 +218,7 @@ def main():
         
         dataloader = zip(label_train_loader, unlabel_train_loader)
         for step, ((img_l_w, mask_l_w, l_image_path), 
-                   (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
+                   (img_u_w, img_us, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
             # if step == 1: break
             
@@ -225,16 +226,16 @@ def main():
             
             img_l_w, mask_l_w = img_l_w.cuda(non_blocking=True), mask_l_w.cuda(non_blocking=True)
             img_u_w = img_u_w.cuda(non_blocking=True)
-            img_u_s, ignore_mask = img_u_s.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
+            img_us, ignore_mask = img_us.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
             cutmix_box = cutmix_box.cuda(non_blocking=True)
             
-            test_conf_uw, test_mask_uw, img_u_s, test_ignore_mask = test(model, img_u_w, img_u_s, ignore_mask, cutmix_box)
+            test_conf_uw, test_mask_uw, img_us, test_ignore_mask = test(model, img_u_w, img_us, ignore_mask, cutmix_box)
             
             model.train()
             label_batch, unlabel_batch = img_l_w.shape[0], img_u_w.shape[0]
             
             with torch.amp.autocast('cuda'):
-                results = model(torch.cat((img_l_w, img_u_w, img_u_s)))
+                results = model(torch.cat((img_l_w, img_u_w, img_us)))
                 
                 pred_mask_lw = results['mask_lw']
                 
@@ -244,8 +245,8 @@ def main():
                 # pred_uw_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
                 pred_uw_corr_map: bool = results['binary_norm_corr_map'][label_batch:].detach()
                 
-                pred_us = results['out_u_s']
-                pred_us_corr = results['corr_out_u_s']
+                pred_us = results['out_us']
+                pred_us_corr = results['corr_out_us']
 
             # 2번 수식의 max F_hat
             pred_uw_prob = pred_uw.detach().softmax(dim=1)
@@ -313,12 +314,20 @@ def main():
             # --------------- Label Loss 계산 ---------------
             label_loss = criterion_l(pred_lw, mask_l_w)
             label_loss_corr = criterion_l(pred_lw_corr, mask_l_w)
+            if 'mask_lw' in results:
+                aux_loss = criterion_l(pred_mask_lw.float(), mask_l_w)
+            
+            c1_label_loss = criterion_feat_l(results['c1_lw'], mask_l_w)
+            c2_label_loss = criterion_feat_l(results['c2_lw'], mask_l_w)
+            c3_label_loss = criterion_feat_l(results['c3_lw'], mask_l_w)
+            c4_label_loss = criterion_feat_l(results['c4_lw'], mask_l_w)
+            c_label_loss = 0.25*c1_label_loss + 0.5*c2_label_loss + 0.5*c3_label_loss + 0.5*c4_label_loss
             # -----------------------------------------------
             
             # -------------------- 1번 수식: Consistency Regularization --------------------
-            loss_u_s = criterion_u(pred_us, pred_mask_uw_cutmixed)
-            loss_u_s = loss_u_s * conf_filter_uw_wo_cutmix
-            loss_u_s = torch.sum(loss_u_s) / torch.sum(ignore_mask_cutmixed != 255).item()
+            loss_us = criterion_u(pred_us, pred_mask_uw_cutmixed)
+            loss_us = loss_us * conf_filter_uw_wo_cutmix
+            loss_us = torch.sum(loss_us) / torch.sum(ignore_mask_cutmixed != 255).item()
             # -------------------------------------------------------------------------------
             
             # -------------------- Consistency Regularization --------------------
@@ -349,13 +358,9 @@ def main():
             loss_u_w_fp = torch.sum(loss_u_w_fp) / torch.sum(ignore_mask != 255).item()
 
             # loss_u_w_fp: UniMatch에서 가져온 loss인 것 같음.
-            # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_u_s * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
-            label_loss = label_loss + label_loss_corr
-            if 'mask_lw' in results:
-                aux_loss = criterion_l(pred_mask_lw.float(), mask_l_w)
-                label_loss += tcfg.LossConfig.aux_loss_weight * aux_loss
-                
-            unlabel_loss = 0.5*loss_u_s + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
+            # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
+            label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * aux_loss + c_label_loss
+            unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
             
             weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.num_epochs/2, dtype=torch.float32))
             weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
@@ -371,7 +376,7 @@ def main():
             total_loss.update(loss.detach())
             total_label_loss.update(label_loss.detach())
             total_label_loss_corr.update(label_loss_corr.detach())
-            total_loss_s.update(loss_u_s.detach())
+            total_loss_s.update(loss_us.detach())
             # total_loss_kl += loss_u_kl.item()
             total_loss_kl.update(loss_u_kl.detach())
             total_loss_w_fp.update(loss_u_w_fp.detach())
@@ -400,7 +405,7 @@ def main():
             
             if step % 10 == 0 and rank == 0:
                 hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s | lr: {lr:5.4f}"
-                loss_info = f"total loss: {total_loss.compute():.3f}, loss label loss: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
+                loss_info = f"total loss: {total_loss.compute():.3f}, label loss: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
                 print('-'*100)
@@ -430,7 +435,7 @@ def main():
                                           "Accuracy/eval/mIOU": res_val['mIOU'],
                                           })
         
-        img_us = img_u_s.detach().cpu().permute(0, 2, 3, 1).numpy()
+        img_us = img_us.detach().cpu().permute(0, 2, 3, 1).numpy()
         pred_mask_us = pred_us.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         conf_us = pred_us.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/unlabel strong image", 
