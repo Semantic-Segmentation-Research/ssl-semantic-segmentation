@@ -138,25 +138,25 @@ class DeepLabV3Plus(nn.Module):
                                                    c3_lw_uw[:self.tcfg.batch_size],
                                                    c4_lw_uw[:self.tcfg.batch_size]])
             
-            c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
-            c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
-            c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
-            c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            # c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
+            # c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
+            # c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
+            # c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
             
-            c1_lw = self.c1_cls(c1_lw)
-            c2_lw = self.c2_cls(c2_lw)
-            c3_lw = self.c3_cls(c3_lw)
-            c4_lw = self.c4_cls(c4_lw)
+            # c1_lw = self.c1_cls(c1_lw)
+            # c2_lw = self.c2_cls(c2_lw)
+            # c3_lw = self.c3_cls(c3_lw)
+            # c4_lw = self.c4_cls(c4_lw)
             
-            c1_lw = F.interpolate(c1_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            c2_lw = F.interpolate(c2_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            c3_lw = F.interpolate(c3_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            c4_lw = F.interpolate(c4_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            # c1_lw = F.interpolate(c1_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            # c2_lw = F.interpolate(c2_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            # c3_lw = F.interpolate(c3_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            # c4_lw = F.interpolate(c4_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
             
-            result_dict['c1_lw'] = c1_lw
-            result_dict['c2_lw'] = c2_lw
-            result_dict['c3_lw'] = c3_lw
-            result_dict['c4_lw'] = c4_lw
+            # result_dict['c1_lw'] = c1_lw
+            # result_dict['c2_lw'] = c2_lw
+            # result_dict['c3_lw'] = c3_lw
+            # result_dict['c4_lw'] = c4_lw
             result_dict['mask_lw'] = output_mask
             # ---------------------------------------------------------
             

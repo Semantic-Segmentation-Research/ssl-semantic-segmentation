@@ -32,10 +32,10 @@ from util.thresh_helper import ThreshController
 from einops import rearrange
 
 from configuration import DataConfig, TrainConfig, ModelConfig
+from losses import LossFactory
 
-
-parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
+# parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
+# parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
 
 
 def init_seeds(seed=0, cuda_deterministic=False):
@@ -54,14 +54,14 @@ def init_seeds(seed=0, cuda_deterministic=False):
 
 # region - test
 # def test(model, dataloader, img_us, cutmix_box):
-    # img_u_w, img_us2, ignore_mask, _, _ = next(iter(dataloader))
-def test(model, img_u_w, img_us, ignore_mask, cutmix_box):
-    indices = torch.randperm(img_u_w.size(0), device=device)
+    # img_uw, img_us2, ignore_mask, _, _ = next(iter(dataloader))
+def test(model, img_uw, img_us, ignore_mask, cutmix_box):
+    indices = torch.randperm(img_uw.size(0), device=device)
     ignore_mask = ignore_mask[indices]
     
     with torch.no_grad():
         model.eval()
-        res_u_w_pred = model(img_u_w[indices], mode='test')
+        res_u_w_pred = model(img_uw[indices], mode='test')
         
         logit_u_w = res_u_w_pred['out'].detach()
         prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
@@ -75,10 +75,6 @@ def test(model, img_u_w, img_us, ignore_mask, cutmix_box):
 
 # region - main
 def main():
-    args = parser.parse_args() # arg parser 정의
-
-    cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader) # yaml 파일 로드 (config 옵션 쉽게 꺼내쓰기 위함)
-
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
@@ -108,22 +104,14 @@ def main():
     if world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
-    # region loss
-    if tcfg.LossConfig.name == 'CELoss':
-        criterion_l = nn.CrossEntropyLoss(ignore_index=tcfg.LossConfig.ignore_index).to(device, non_blocking=True)
-    elif tcfg.LossConfig.name == 'OHEM':
-        criterion_l = ProbOhemCrossEntropy2d(ignore_index=tcfg.LossConfig.ignore_index,
-                                             thresh=tcfg.LossConfig.ohem_threshold,
-                                             min_kept=tcfg.LossConfig.ohem_min_kept
-                                             ).to(device, non_blocking=True)
-    else:
-        raise NotImplementedError(f'{tcfg.LossConfig.name} criterion is not implemented')
-
-    criterion_feat_l = nn.CrossEntropyLoss(ignore_index=tcfg.LossConfig.ignore_index).to(device, non_blocking=True)
+    losses = LossFactory()
+    loss_ce     = losses.label(mode='ce', device=device)
+    loss_ohem   = losses.label(mode='ohem', device=device)
+    loss_dice   = losses.label(mode='dice', device=device)
     
-    criterion_u = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
-    criterion_kl = nn.KLDivLoss(reduction='none').to(device, non_blocking=True)
-    
+    loss_us_cr = losses.unlabel(mode='us_cr', device=device)
+    loss_uw_cr = losses.unlabel(mode='uw_cr', device=device)
+    loss_kl    = losses.unlabel(mode='kl', device=device)
 
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
                                     mode='train_u',
@@ -175,13 +163,14 @@ def main():
     tb = SSLTensorBoard(writer)
     
     num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
-    thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=cfg['thresh_init'])
+    thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=tcfg.thresh_init)
 
     previous_best = 0.0
     total_loss              = MeanMetric().to(device=device)
     total_aux_loss          = MeanMetric().to(device=device)
     total_label_loss        = MeanMetric().to(device=device)
     total_label_loss_corr   = MeanMetric().to(device=device)
+    total_dice_loss         = MeanMetric().to(device=device)
     total_loss_s            = MeanMetric().to(device=device)
     total_loss_kl           = MeanMetric().to(device=device)
     total_loss_w_fp         = MeanMetric().to(device=device)
@@ -208,6 +197,7 @@ def main():
         total_loss.reset()
         total_label_loss.reset()
         total_label_loss_corr.reset()
+        total_dice_loss.reset()
         total_loss_s.reset()
         total_loss_kl.reset()
         total_mask_ratio = 0.0
@@ -217,25 +207,25 @@ def main():
             unlabel_train_loader.sampler.set_epoch(epoch)
         
         dataloader = zip(label_train_loader, unlabel_train_loader)
-        for step, ((img_l_w, mask_l_w, l_image_path), 
-                   (img_u_w, img_us, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
+        for step, ((img_lw, mask_lw, l_image_path), 
+                   (img_uw, img_us, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
 
             # if step == 1: break
             
             start_event.record()
             
-            img_l_w, mask_l_w = img_l_w.cuda(non_blocking=True), mask_l_w.cuda(non_blocking=True)
-            img_u_w = img_u_w.cuda(non_blocking=True)
+            img_lw, mask_lw = img_lw.cuda(non_blocking=True), mask_lw.cuda(non_blocking=True)
+            img_uw = img_uw.cuda(non_blocking=True)
             img_us, ignore_mask = img_us.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
             cutmix_box = cutmix_box.cuda(non_blocking=True)
             
-            test_conf_uw, test_mask_uw, img_us, test_ignore_mask = test(model, img_u_w, img_us, ignore_mask, cutmix_box)
+            test_conf_uw, test_mask_uw, img_us, test_ignore_mask = test(model, img_uw, img_us, ignore_mask, cutmix_box)
             
             model.train()
-            label_batch, unlabel_batch = img_l_w.shape[0], img_u_w.shape[0]
+            label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
             
             with torch.amp.autocast('cuda'):
-                results = model(torch.cat((img_l_w, img_u_w, img_us)))
+                results = model(torch.cat((img_lw, img_uw, img_us)))
                 
                 pred_mask_lw = results['mask_lw']
                 
@@ -309,89 +299,90 @@ def main():
                     conf_filter_uw_wo_cutmix: bool = conf_filter_uw_wo_cutmix | conf_filter_uw
             # -----------------------------------------------------------------------------------------------------------------------------------------
             
-
-            # ----------------------------------------------------- loss 계산 -----------------------------------------------------
-            # --------------- Label Loss 계산 ---------------
-            label_loss = criterion_l(pred_lw, mask_l_w)
-            label_loss_corr = criterion_l(pred_lw_corr, mask_l_w)
-            if 'mask_lw' in results:
-                aux_loss = criterion_l(pred_mask_lw.float(), mask_l_w)
             
-            c1_label_loss = criterion_feat_l(results['c1_lw'], mask_l_w)
-            c2_label_loss = criterion_feat_l(results['c2_lw'], mask_l_w)
-            c3_label_loss = criterion_feat_l(results['c3_lw'], mask_l_w)
-            c4_label_loss = criterion_feat_l(results['c4_lw'], mask_l_w)
-            c_label_loss = 0.25*c1_label_loss + 0.5*c2_label_loss + 0.5*c3_label_loss + 0.5*c4_label_loss
-            # -----------------------------------------------
+            # region loss 계산
+            # ---------------------- label part ----------------------
+            label_loss      = loss_ohem(pred_lw, mask_lw, 
+                                        ignore_index=tcfg.LossConfig.ignore_index,
+                                        threshold=tcfg.LossConfig.ohem_threshold,
+                                        min_kept=tcfg.LossConfig.ohem_min_kept)
+            label_loss_corr = loss_ohem(pred_lw_corr, mask_lw, 
+                                        ignore_index=tcfg.LossConfig.ignore_index,
+                                        threshold=tcfg.LossConfig.ohem_threshold,
+                                        min_kept=tcfg.LossConfig.ohem_min_kept)
+            label_aux_loss  = loss_ohem(pred_mask_lw.float(), mask_lw, 
+                                        ignore_index=tcfg.LossConfig.ignore_index,
+                                        threshold=tcfg.LossConfig.ohem_threshold,
+                                        min_kept=tcfg.LossConfig.ohem_min_kept)
             
-            # -------------------- 1번 수식: Consistency Regularization --------------------
-            loss_us = criterion_u(pred_us, pred_mask_uw_cutmixed)
-            loss_us = loss_us * conf_filter_uw_wo_cutmix
-            loss_us = torch.sum(loss_us) / torch.sum(ignore_mask_cutmixed != 255).item()
-            # -------------------------------------------------------------------------------
+            label_dice_loss = loss_dice(pred_lw, mask_lw)
+            # ---------------------------------------------------------
             
-            # -------------------- Consistency Regularization --------------------
-            loss_u_corr_s = criterion_u(pred_us_corr, pred_mask_uw_cutmixed)
-            loss_u_corr_s = loss_u_corr_s * conf_filter_uw_wo_cutmix
-            loss_u_corr_s = torch.sum(loss_u_corr_s) / torch.sum(ignore_mask_cutmixed != 255).item()
-            # --------------------------------------------------------------------
+            # ----------------------- unlabel part -----------------------
+            loss_us = loss_us_cr(pred=pred_us,
+                                 true=pred_mask_uw_cutmixed, 
+                                 confidence=conf_filter_uw_wo_cutmix, 
+                                 ignore_mask=ignore_mask_cutmixed)
             
-            
+            loss_us_corr = loss_us_cr(pred=pred_us_corr, 
+                                      true=pred_mask_uw_cutmixed, 
+                                      confidence=conf_filter_uw_wo_cutmix, 
+                                      ignore_mask=ignore_mask_cutmixed)
             # 6번 수식
-            loss_u_corr_w = criterion_u(pred_uw_corr, pred_mask_uw)
-            loss_u_corr_w = loss_u_corr_w * ((pred_conf_uw >= thresh_global) & (ignore_mask != 255))
-            loss_u_corr_w = torch.sum(loss_u_corr_w) / torch.sum(ignore_mask != 255).item()
-            loss_u_corr = 0.5 * (loss_u_corr_s + loss_u_corr_w)
-            
-            softmax_pred_u_w = F.softmax(pred_uw.detach(), dim=1)
-            logsoftmax_pred_us = F.log_softmax(pred_us, dim=1)
+            loss_uw_corr = loss_uw_cr(pred=pred_uw_corr, 
+                                      true=pred_mask_uw, 
+                                      confidence=pred_conf_uw,
+                                      threshold=thresh_global,
+                                      ignore_mask=ignore_mask)
 
+            loss_u_corr = 0.5 * (loss_us_corr + loss_uw_corr)
+            
             # 3번 수식
-            loss_u_kl_sa2wa = criterion_kl(logsoftmax_pred_us, softmax_pred_u_w)
-            # 3번 수식에서의 M_i 값
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa, dim=1) * conf_filter_uw
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa) / torch.sum(ignore_mask_cutmixed != 255).item()
-            loss_u_kl = loss_u_kl_sa2wa
-
-            loss_u_w_fp = criterion_u(pred_uw_fp, pred_mask_uw)
-            loss_u_w_fp = loss_u_w_fp * ((pred_conf_uw >= thresh_global) & (ignore_mask != 255))
-            loss_u_w_fp = torch.sum(loss_u_w_fp) / torch.sum(ignore_mask != 255).item()
-
-            # loss_u_w_fp: UniMatch에서 가져온 loss인 것 같음.
-            # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
-            label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * aux_loss + c_label_loss
-            unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
+            loss_u_kl = loss_kl(pred_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+            loss_uw_fp = loss_uw_cr(pred=pred_uw_fp, 
+                                    true=pred_mask_uw, 
+                                    confidence=pred_conf_uw, 
+                                    threshold=thresh_global, 
+                                    ignore_mask=ignore_mask)
+            # ---------------------------------------------------------------------
             
-            weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.num_epochs/2, dtype=torch.float32))
-            weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
-            weight_label = 1 - 0.5 * weight_unlabel
-            loss = weight_label * label_loss + weight_unlabel * unlabel_loss
-            # -----------------------------------------------------------------------------------------------------------------------------
+            # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
+            # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
+            label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
+            unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
+            
+            # weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.lr_period, dtype=torch.float32))
+            # weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
+            # weight_label = 2 - 0.5 * weight_unlabel
+
+            # loss = weight_label * label_loss + weight_unlabel * unlabel_loss
+            loss = label_loss + unlabel_loss
             
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            total_aux_loss.update(aux_loss.detach())
+            total_aux_loss.update(label_aux_loss.detach())
             total_loss.update(loss.detach())
             total_label_loss.update(label_loss.detach())
             total_label_loss_corr.update(label_loss_corr.detach())
+            total_dice_loss.update(label_dice_loss.detach())
+            
             total_loss_s.update(loss_us.detach())
-            # total_loss_kl += loss_u_kl.item()
             total_loss_kl.update(loss_u_kl.detach())
-            total_loss_w_fp.update(loss_u_w_fp.detach())
+            total_loss_w_fp.update(loss_uw_fp.detach())
             total_loss_corr_u.update(loss_u_corr.detach())
             total_mask_ratio += ((pred_conf_uw >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
             
             
-            # iters = epoch * len(unlabel_train_loader) + step
-            power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
-            current_cycle_epoch = epoch % tcfg.lr_period
-            iters = current_cycle_epoch * len(unlabel_train_loader) + step
-            num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
+            iters = epoch * len(unlabel_train_loader) + step
+            # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
+            # current_cycle_epoch = epoch % tcfg.lr_period
+            # iters = current_cycle_epoch * len(unlabel_train_loader) + step
+            # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
             
-            lr = tcfg.lr * (1 - iters / num_cycle_steps) ** power
+            lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
             optimizer.param_groups[0]["lr"] = lr
             optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
 
@@ -427,6 +418,7 @@ def main():
                                           "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss corr": total_label_loss_corr.compute(), 
+                                          "Optimization/loss/label dice loss": total_dice_loss.compute(), 
                                           "Optimization/loss/unlabel strong loss": total_loss_s.compute(), 
                                           "Optimization/loss/label weak fp loss": total_loss_w_fp.compute(), 
                                           "Optimization/loss/unlabel corr loss": total_loss_corr_u.compute(),
@@ -446,16 +438,16 @@ def main():
                       image_path=l_image_path,
                       epoch=epoch)
 
-        img_l_w = img_l_w.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_l_w = pred_lw.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        img_lw = img_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_lw = pred_lw.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         conf_l = pred_lw.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        if mask_l_w.dim() == 4:
-            gt = mask_l_w.detach().cpu().permute(0, 2, 3, 1).numpy()
-        elif mask_l_w.dim() == 3:
-            gt = mask_l_w.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        if mask_lw.dim() == 4:
+            gt = mask_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
+        elif mask_lw.dim() == 3:
+            gt = mask_lw.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
-                      image=img_l_w, 
-                      pred=pred_mask_l_w,
+                      image=img_lw, 
+                      pred=pred_mask_lw,
                       conf=conf_l,
                       mask=gt,
                       image_path=u_image_path,

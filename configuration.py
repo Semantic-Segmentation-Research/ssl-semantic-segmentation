@@ -44,7 +44,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.1.9_L2U"
+    model_name: str     = "v1.2.2_LTU"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -52,8 +52,8 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    # lr: float           = 5e-4 # 5e-3
-    lr: float           = 1e-3 # 5e-3
+    lr: float           = 5e-4 # 5e-3
+    decay_power: float   = 0.9
     lr_multi: float     = 1.0
     num_epochs: int     = 800
     num_workers: int    = 8
@@ -62,16 +62,16 @@ class TrainConfig:
     local_rank: int     = 0
     port: int           = 0
     
-    lr_period: int       = 400
-    label_lr_decay: float = 0.9
-    unlabel_lr_decay: float = 0.98
-    resume: bool        = False
+    lr_period: int          = 400
+    label_lr_decay: float   = 0.5
+    unlabel_lr_decay: float = 0.9
+    resume: bool            = False
+    thresh_init: float      = 0.85
     
     eval_mode: str      = 'original'
     
     @dataclass
     class LossConfig:
-        name: str = "OHEM" # OHEM, CELoss
         ignore_index: int = 255
         ohem_threshold: float = 0.9
         ohem_min_kept: int = 100000
