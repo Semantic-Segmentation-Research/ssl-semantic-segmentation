@@ -89,14 +89,12 @@ def main():
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
-    optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
-                     {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-                      'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
-    # optimizer = Adam([
-    #     {"params": model.backbone.parameters(), 'lr': tcfg.lr},
-    #     {"params": [param for name, param in model.named_parameters() if 'backbone' not in name], "lr": tcfg.lr * tcfg.lr_multi}
-    # ])
-    # TODO: EMA 적용 예정
+    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
+    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    
+    optimizer = Adam(model.parameters(), lr=tcfg.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
     
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
@@ -361,7 +359,8 @@ def main():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            scheduler.step()
+            
             total_aux_loss.update(label_aux_loss.detach())
             total_loss.update(loss.detach())
             total_label_loss.update(label_loss.detach())
@@ -376,15 +375,15 @@ def main():
                                 (ignore_mask != 255).sum().item()
             
             
-            iters = epoch * len(unlabel_train_loader) + step
-            # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
-            # current_cycle_epoch = epoch % tcfg.lr_period
-            # iters = current_cycle_epoch * len(unlabel_train_loader) + step
-            # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
+            # iters = epoch * len(unlabel_train_loader) + step
+            # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
+            # # current_cycle_epoch = epoch % tcfg.lr_period
+            # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
+            # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
             
-            lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
-            optimizer.param_groups[0]["lr"] = lr
-            optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
+            # lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
+            # optimizer.param_groups[0]["lr"] = lr
+            # optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
 
             end_event.record()
             torch.cuda.synchronize()
