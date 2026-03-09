@@ -89,13 +89,6 @@ def main():
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
-    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
-    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
-    
-    optimizer = Adam(model.parameters(), lr=tcfg.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
-    
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
     
@@ -127,9 +120,7 @@ def main():
                                  size=tcfg.crop_size,
                                  valid_path=dcfg.val_id_path) 
 
-    # aug_layer = GPUAugmentation(size=tcfg.crop_size).to(device)
     use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
-    
     trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
     label_train_loader = DataLoader(label_train_set, 
                                batch_size=tcfg.batch_size,
@@ -160,7 +151,22 @@ def main():
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
     
-    num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
+    steps_per_epoch = len(unlabel_train_loader) + len(label_train_loader)
+    # num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
+    num_total_steps = steps_per_epoch * tcfg.num_epochs
+    
+    # region optimizer
+    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
+    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    
+    optimizer = Adam(model.parameters(), lr=tcfg.lr)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
+    scheduler = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * 24,
+                                                          t_mul=2.,
+                                                          m_mul=0.8)
+    
+    
     thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=tcfg.thresh_init)
 
     previous_best = 0.0

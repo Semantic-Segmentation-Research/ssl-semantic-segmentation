@@ -7,6 +7,8 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 from collections import namedtuple
+import math
+from torch.optim.lr_scheduler import LambdaLR
 
 
 # region - Label Table
@@ -267,3 +269,40 @@ def init_non_backbone(m):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
         
+
+
+
+def get_tf_cosine_decay_restarts_lambda(first_decay_steps, t_mul=2.0, m_mul=0.8, alpha=0.0):
+    """
+    TensorFlow의 CosineDecayRestarts와 100% 동일하게 작동하는 람다 함수 생성기
+    """
+    def lr_lambda(step):
+        if step == 0:
+            return 1.0
+        
+        # 1. 현재 어떤 주기(Restart)에 있는지 등비수열 합 공식을 역산해서 찾음
+        completed_fraction = step / first_decay_steps
+        if t_mul == 1.0:
+            i_restart = math.floor(completed_fraction)
+            decay_steps = first_decay_steps
+            step_in_restart = step - (i_restart * first_decay_steps)
+        else:
+            i_restart = math.floor(math.log(1 - completed_fraction * (1 - t_mul), t_mul))
+            # 이전 주기들까지 소모된 총 스텝 수 계산
+            sum_steps = first_decay_steps * (1 - t_mul ** i_restart) / (1 - t_mul)
+            decay_steps = first_decay_steps * (t_mul ** i_restart)
+            step_in_restart = step - sum_steps
+            
+        # 2. 현재 주기 내에서의 진행도 (0.0 ~ 1.0)
+        progress = step_in_restart / decay_steps
+        
+        # 3. 코사인 감소 계산
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+        
+        # 4. m_mul 적용 (현재 주기에 맞게 최고점 깎기)
+        m_fac = m_mul ** i_restart
+        
+        # 최종 곱해질 비율 반환
+        return m_fac * (alpha + (1.0 - alpha) * cosine_decay)
+        
+    return lr_lambda

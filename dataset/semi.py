@@ -31,13 +31,14 @@ class SemiDataset(Dataset):
                               18: self.ignore_label, 19: 6, 20: 7, 21: 8, 22: 9, 23: 10, 24: 11, 25: 12, 26: 13, 27: 14,
                               28: 15, 29: self.ignore_label, 30: self.ignore_label, 31: 16, 32: 17, 33: 18}
 
-        if mode == 'train_l' or mode == 'train_u': # mode가 train_l이거나 train_u이면 self.mode로 써도 되지 않앗나?
+        if mode == 'train_l' or mode == 'train_u': 
             with open(id_path, 'r') as f:
-                self.ids = f.read().splitlines() # 텍스트파일 한 줄(enter) 씩 리스트로 반환
-            if mode == 'train_l' and nsample is not None: # train_l 모드이고 nsample이 있으면
-                self.ids *= math.ceil(nsample / len(self.ids)) # nsample을 self.ids 길이로 나눈 값 반올림 한 값으로 반복
-                random.shuffle(self.ids) # ids 랜덤 셔플링
-                self.ids = self.ids[:nsample] # self.ids는 nsample 까지의 리스트로 재정의
+                self.ids = f.read().splitlines() 
+
+            if mode == 'train_l' and nsample is not None: 
+                self.ids *= math.ceil(nsample / len(self.ids)) 
+                random.shuffle(self.ids)
+                self.ids = self.ids[:nsample]
         else:
             with open(valid_path, 'r') as f:
                 self.ids = f.read().splitlines()
