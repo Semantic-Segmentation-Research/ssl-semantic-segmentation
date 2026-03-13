@@ -75,11 +75,51 @@ class DeepLabV3Plus(nn.Module):
                                  dilations=mcfg.dilations,
                                  ratio=2))]))
         
-        self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
-        self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
-        self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
-        self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
-    
+        # self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
+        self.fuse = nn.Sequential(OrderedDict([
+            # (112, 112, 114)
+            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (56, 56, 288)
+            ("c2", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, 114, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(114),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(114, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (28, 28, 576)
+            ("c3", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (28, 28, 864)
+            ("c4", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 ))
+        ]))
+        
+        self.cls = nn.Conv2d(64*4, mcfg.num_classes, 1, padding=0, bias=True)
+        
     # region forward
     def forward(self, x, mode='train'):
         result_dict = {}
@@ -133,30 +173,29 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
-                                                   c2_lw_uw[:self.tcfg.batch_size],
-                                                   c3_lw_uw[:self.tcfg.batch_size],
-                                                   c4_lw_uw[:self.tcfg.batch_size]])
+            # output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
+            #                                        c2_lw_uw[:self.tcfg.batch_size],
+            #                                        c3_lw_uw[:self.tcfg.batch_size],
+            #                                        c4_lw_uw[:self.tcfg.batch_size]])
             
-            # c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
-            # c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
-            # c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
-            # c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
+            c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
+            c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
+            c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
             
-            # c1_lw = self.c1_cls(c1_lw)
-            # c2_lw = self.c2_cls(c2_lw)
-            # c3_lw = self.c3_cls(c3_lw)
-            # c4_lw = self.c4_cls(c4_lw)
+            c1_lw = self.fuse.c1(c1_lw)
+            c2_lw = self.fuse.c2(c2_lw)
+            c3_lw = self.fuse.c3(c3_lw)
+            c4_lw = self.fuse.c4(c4_lw)
             
-            # c1_lw = F.interpolate(c1_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            # c2_lw = F.interpolate(c2_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            # c3_lw = F.interpolate(c3_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
-            # c4_lw = F.interpolate(c4_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            c2_lw = F.interpolate(c2_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             
-            # result_dict['c1_lw'] = c1_lw
-            # result_dict['c2_lw'] = c2_lw
-            # result_dict['c3_lw'] = c3_lw
-            # result_dict['c4_lw'] = c4_lw
+            c_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], axis=1)
+            c_lw = self.cls(c_lw)
+            output_mask = F.interpolate(c_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            
             result_dict['mask_lw'] = output_mask
             # ---------------------------------------------------------
             

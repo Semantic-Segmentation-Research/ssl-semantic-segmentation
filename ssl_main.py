@@ -33,6 +33,7 @@ from einops import rearrange
 
 from configuration import DataConfig, TrainConfig, ModelConfig
 from losses import LossFactory
+from torch.optim.lr_scheduler import LambdaLR
 
 # parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
 # parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
@@ -151,8 +152,7 @@ def main():
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
     
-    steps_per_epoch = len(unlabel_train_loader) + len(label_train_loader)
-    # num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
+    steps_per_epoch = len(unlabel_train_loader)
     num_total_steps = steps_per_epoch * tcfg.num_epochs
     
     # region optimizer
@@ -162,10 +162,10 @@ def main():
     
     optimizer = Adam(model.parameters(), lr=tcfg.lr)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
-    scheduler = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * 24,
-                                                          t_mul=2.,
-                                                          m_mul=0.8)
-    
+    # lr_cd = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * 24,
+    #                                                       t_mul=2.,
+    #                                                       m_mul=0.8)
+    # scheduler = LambdaLR(optimizer, lr_lambda=lr_cd)
     
     thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=tcfg.thresh_init)
 
@@ -285,7 +285,7 @@ def main():
             """ label과 unlabel이 같은 클래스를 공간적으로 유사한 부분에서 공유하고 있으면 unique_cls에 그 클래스가 나타남."""
             segment = segments.view(tcfg.batch_size, -1, tcfg.crop_size*tcfg.crop_size)
             segment_ori = pred_corr_map_uw_wo_cutmixed.view(tcfg.batch_size, -1, tcfg.crop_size*tcfg.crop_size)
-            high_conf_ratio = torch.sum(segment, dim=2) / torch.sum(segment_ori, dim=2)
+            high_conf_ratio = torch.sum(segment, dim=2) / (torch.sum(segment_ori, dim=2) + 1e-7)
             
             valid_mask = (torch.sum(segment, dim=2) > 0) & (high_conf_ratio >= thresh_global)
             valid_img_idx, valid_segment_idx = torch.where(valid_mask)
@@ -300,7 +300,7 @@ def main():
                     pred_mask_uw_cutmixed[img_idx][segment_ori==1] = top_class # 10번 수식, top class를 찾아 수정
                     conf_filter_uw_wo_cutmix[img_idx] = conf_filter_uw_wo_cutmix[img_idx] | segment_ori # 수정
                     
-                    conf_filter_uw_wo_cutmix: bool = conf_filter_uw_wo_cutmix | conf_filter_uw
+            conf_filter_uw_wo_cutmix: bool = conf_filter_uw_wo_cutmix | conf_filter_uw
             # -----------------------------------------------------------------------------------------------------------------------------------------
             
             
@@ -365,7 +365,7 @@ def main():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
             
             total_aux_loss.update(label_aux_loss.detach())
             total_loss.update(loss.detach())
@@ -381,16 +381,17 @@ def main():
                                 (ignore_mask != 255).sum().item()
             
             
-            # iters = epoch * len(unlabel_train_loader) + step
+            iters = epoch * len(unlabel_train_loader) + step
             # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
             # # current_cycle_epoch = epoch % tcfg.lr_period
             # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
             # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
             
-            # lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
-            # optimizer.param_groups[0]["lr"] = lr
+            lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
+            optimizer.param_groups[0]["lr"] = lr
             # optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
-
+            # lr = scheduler.get_last_lr()[0]
+            
             end_event.record()
             torch.cuda.synchronize()
             
@@ -400,7 +401,7 @@ def main():
             
             
             if step % 10 == 0 and rank == 0:
-                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s | lr: {lr:5.4f}"
+                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s"
                 loss_info = f"total loss: {total_loss.compute():.3f}, label loss: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
@@ -479,9 +480,15 @@ def main():
             if previous_best != 0:
                 os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
+            # torch.save({"epoch": epoch,
+            #             "model_state_dict": model.state_dict(),
+            #             'optimizer_state_dict': optimizer.state_dict(),
+            #             "scheduler_state_dict": scheduler.state_dict()}, 
+            #            osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
             torch.save({"epoch": epoch,
                         "model_state_dict": model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict()}, osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+                        'optimizer_state_dict': optimizer.state_dict()},
+                       osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
         if rank != 0:
             torch.distributed.barrier()

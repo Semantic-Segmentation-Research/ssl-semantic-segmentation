@@ -44,7 +44,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.2.2_LTU"
+    model_name: str     = "v1.3.0_LTU"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -52,7 +52,8 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    lr: float           = 5e-4 # 5e-3
+    # lr: float           = 5e-4 # 5e-3
+    lr: float           = 2e-4 # 5e-3
     decay_power: float   = 0.9
     lr_multi: float     = 1.0
     num_epochs: int     = 800
@@ -62,9 +63,9 @@ class TrainConfig:
     local_rank: int     = 0
     port: int           = 0
     
-    lr_period: int          = 400
-    label_lr_decay: float   = 0.5
-    unlabel_lr_decay: float = 0.9
+    # lr_period: int          = 400
+    # label_lr_decay: float   = 0.5
+    # unlabel_lr_decay: float = 0.9
     resume: bool            = False
     thresh_init: float      = 0.85
     
@@ -90,7 +91,3 @@ class TrainConfig:
         
         blur_prob: float = 0.5
         cutmix_prob: float = 0.5
-        
-        # random_scale: list = field(default_factory=lambda: [0.5, 2.0])
-        # gaussian_blur_prob: float = 0.5
-        # color_jitter: bool = True

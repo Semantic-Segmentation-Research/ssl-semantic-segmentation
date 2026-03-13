@@ -27,11 +27,11 @@ def ASPPConv(in_channels, out_channels, atrous_rate):
                   groups=in_channels,
                   bias=False),
         nn.BatchNorm2d(in_channels),
-        nn.ReLU(True),
+        nn.ReLU6(True),
         # pointwise conv to mix channels and adjust to desired out_channels
         nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
         nn.BatchNorm2d(out_channels),
-        nn.ReLU(True),
+        nn.ReLU6(True),
     )
     return block
 
@@ -158,7 +158,7 @@ class CrossCovarianceAtt(nn.Module):
         self.dwconv = nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1, groups=mid_ch)
         self.proj   = nn.Conv2d(mid_ch, nclass, kernel_size=3, padding=1)
         
-        self.temperature = nn.Parameter(torch.ones(1, mid_ch, 1))
+        # self.temperature = nn.Parameter(torch.ones(1, mid_ch, 1))
         
     # Encoder output & Decoder output
     def forward(self, enc_out, dec_out, aug_type='weak'):
@@ -179,7 +179,7 @@ class CrossCovarianceAtt(nn.Module):
         k = F.normalize(k, p=2, dim=1)
         
         attn = torch.bmm(q, k.transpose(1, 2))
-        attn /= self.temperature
+        # attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
         xca = torch.bmm(attn, v)
 
@@ -253,9 +253,13 @@ class FlowAtt(nn.Module):
         self.xca_layer = nn.Sequential(OrderedDict([
             ('kv_conv', nn.Conv2d(channel, channel * 2, kernel_size=1, stride=1, padding=0, bias=True)),
             ('q_conv', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=True)),
-            ('dwconv', nn.Conv2d(channel, channel, kernel_size=3, padding=1, groups=channel)),
+            ("proj", nn.Sequential(
+                nn.Conv2d(channel, channel, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(channel),
+                nn.ReLU(inplace=True)
+                ))
         ]))
-        self.temperature = nn.Parameter(0.01 * torch.ones(1, channel, 1))
+        # self.temperature = nn.Parameter(1e-6 * torch.ones(1, channel, 1))
         # --------------------------------------------------------------------
         
         
@@ -264,31 +268,42 @@ class FlowAtt(nn.Module):
         
         x = self.star_layer.reduction(feat)
         x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
-        x = self.star_layer.relu(x1) * x2
+        # x = self.star_layer.relu(x1) * x2
+        x = self.star_layer.relu(x1) + x2
         x = self.star_layer.dwconv2(self.star_layer.g(x))
         
         x = input + self.star_layer.drop_path(x)
                 
         return x
     
+    
     def xca(self, feat1, feat2):
         b, _, h, w = feat1.shape
         
-        q = self.xca_layer.q_conv(feat2.detach()).flatten(2)
+        # q = self.xca_layer.q_conv(feat2.detach()).flatten(2)
+        q = self.xca_layer.q_conv(feat2).flatten(2)
         kv = self.xca_layer.kv_conv(feat1).flatten(2)
         k, v = kv.chunk(2, dim=1)
         
-        q = F.normalize(q, p=2, dim=1)
-        k = F.normalize(k, p=2, dim=1)
+        # q = F.normalize(q, p=2, dim=2)
+        # k = F.normalize(k, p=2, dim=2)
+        # 2. 치명적 버그 수정: dim=2(공간 차원)로 변경 + 역전파 NaN 방지용 1e-6 명시적 추가
+        q_norm = torch.norm(q, p=2, dim=2, keepdim=True)
+        k_norm = torch.norm(k, p=2, dim=2, keepdim=True)
+        
+        q = q / (q_norm + 1e-6)
+        k = k / (k_norm + 1e-6)
         
         attn = torch.bmm(q, k.transpose(1, 2)).float()
-        attn /= self.temperature
+        # attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
         xca = torch.bmm(attn, v)
 
         xca = xca.view(b, -1, h, w)
+        xca = self.xca_layer.proj(xca)
         
         return xca
+
 
     def forward(self, feat1, feat2=None):
         feat1 = self.star(feat1)
