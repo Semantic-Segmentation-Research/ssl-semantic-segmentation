@@ -63,7 +63,9 @@ class LossFactory:
             loss_ce = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
             loss = loss_ce(pred, true)
             loss *= confidence
-            loss = torch.sum(loss) / torch.sum(ignore_mask != 255).item()
+            denom = torch.sum(ignore_mask != 255)
+            denom = denom.clamp_min(1)
+            loss = torch.sum(loss) / denom
 
             return loss
         
@@ -72,7 +74,9 @@ class LossFactory:
             loss_ce = nn.CrossEntropyLoss(reduction='none').to(device, non_blocking=True)
             loss = loss_ce(pred, true)
             loss = loss * ((confidence >= threshold) & (ignore_mask != 255))
-            loss = torch.sum(loss) / torch.sum(ignore_mask != 255).item()
+            denom = torch.sum(ignore_mask != 255)
+            denom = denom.clamp_min(1)
+            loss = torch.sum(loss) / denom
             
             return loss
         
@@ -84,7 +88,9 @@ class LossFactory:
             loss_kl = nn.KLDivLoss(reduction='none').to(device, non_blocking=True)
             loss = loss_kl(logsoftmax_pred_us, softmax_pred_u_w)
             loss = torch.sum(loss, dim=1) * confidence
-            loss = torch.sum(loss) / torch.sum(ignore_mask != 255).item()
+            denom = torch.sum(ignore_mask != 255)
+            denom = denom.clamp_min(1)
+            loss = torch.sum(loss) / denom
             
             return loss
             

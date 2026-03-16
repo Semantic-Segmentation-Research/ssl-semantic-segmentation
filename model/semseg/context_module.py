@@ -131,6 +131,7 @@ class Corr(nn.Module):
         corr_map = rearrange(corr_map, '(n m) 1 h w -> (n m) (h w)', n=n, m=m)
         # Min - Max scaling (normalization), 수식 7번
         range_ = torch.max(corr_map, dim=1, keepdim=True)[0] - torch.min(corr_map, dim=1, keepdim=True)[0]
+        range_ = torch.clamp(range_, min=1e-6)
         temp_map = ((- torch.min(corr_map, dim=1, keepdim=True)[0]) + corr_map) / range_
         corr_map = (temp_map > 0.5)
         
@@ -180,7 +181,8 @@ class CrossCovarianceAtt(nn.Module):
         
         attn = torch.bmm(q, k.transpose(1, 2))
         # attn /= self.temperature
-        attn = F.softmax(attn, dim=-1)
+        # attn = F.softmax(attn, dim=-1)
+        attn = F.softmax(attn.float(), dim=-1).type_as(attn)
         xca = torch.bmm(attn, v)
 
         xca = F.softmax(xca, dim=1)
@@ -209,6 +211,7 @@ class CrossCovarianceAtt(nn.Module):
         corr_map = rearrange(corr_map, '(n m) 1 h w -> (n m) (h w)', n=n, m=m)
         # Min - Max scaling (normalization), 수식 7번
         range_ = torch.max(corr_map, dim=1, keepdim=True)[0] - torch.min(corr_map, dim=1, keepdim=True)[0]
+        range_ = torch.clamp(range_, min=1e-6)
         temp_map = ((- torch.min(corr_map, dim=1, keepdim=True)[0]) + corr_map) / range_
         corr_map = (temp_map > 0.5)
         
@@ -295,6 +298,8 @@ class FlowAtt(nn.Module):
         k = k / (k_norm + 1e-6)
         
         attn = torch.bmm(q, k.transpose(1, 2)).float()
+        # 안정화를 위해 NaN/Inf를 0/대규모 값으로 치환
+        attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         # attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
         xca = torch.bmm(attn, v)
