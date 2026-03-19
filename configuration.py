@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.3.1_LTU"
+    model_name: str     = "v1.3.2_LTU"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -62,9 +62,9 @@ class TrainConfig:
     local_rank: int     = 0
     port: int           = 0
     
-    # lr_period: int          = 400
-    # label_lr_decay: float   = 0.5
-    # unlabel_lr_decay: float = 0.9
+    lr_period: int          = 400
+    label_lr_decay: float   = 0.5
+    unlabel_lr_decay: float = 0.9
     resume: bool            = False
     thresh_init: float      = 0.85
     
