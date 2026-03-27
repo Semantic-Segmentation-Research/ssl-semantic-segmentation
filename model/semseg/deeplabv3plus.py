@@ -43,12 +43,12 @@ class DeepLabV3Plus(nn.Module):
                                                 output_size=self.tcfg.crop_size,
                                                 nclass=mcfg.num_classes))
         ]))
-        self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
-                                                    in_ch=mcfg.nf*mcfg.bttln_exp,
-                                                    in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
-                                                    ratio=2,
-                                                    dilations=mcfg.dilations,
-                                                    nclass=mcfg.num_classes)
+        # self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
+        #                                             in_ch=mcfg.nf*mcfg.bttln_exp,
+        #                                             in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
+        #                                             ratio=2,
+        #                                             dilations=mcfg.dilations,
+        #                                             nclass=mcfg.num_classes)
         
         self.flow_layer = nn.Sequential(OrderedDict([
             ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
@@ -173,11 +173,6 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            # output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
-            #                                        c2_lw_uw[:self.tcfg.batch_size],
-            #                                        c3_lw_uw[:self.tcfg.batch_size],
-            #                                        c4_lw_uw[:self.tcfg.batch_size]])
-            
             c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
             c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
             c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])

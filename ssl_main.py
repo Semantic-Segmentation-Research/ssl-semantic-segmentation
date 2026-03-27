@@ -83,15 +83,14 @@ def main():
     for name, module in model.named_modules():
         if name.startswith('backbone') or name == '': continue  
         utils.init_non_backbone(module)
-    
-    if rank == 0:
-        logger.info(f'Total params: {count_params(model):.1f}M\n')
-
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
+
+    # if rank == 0:
+    logger.info(f'Total params: {count_params(model):.1f}M\n')
     
-    if world_size > 1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    # if world_size > 1:
+    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     losses = LossFactory()
     loss_ce     = losses.label(mode='ce', device=device)
@@ -102,6 +101,7 @@ def main():
     loss_uw_cr = losses.unlabel(mode='uw_cr', device=device)
     loss_kl    = losses.unlabel(mode='kl', device=device)
 
+    # ------------------------------------------- get dataloader -------------------------------------------
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
                                     mode='train_u',
                                     size=tcfg.crop_size,
@@ -145,7 +145,8 @@ def main():
                                    drop_last=False, 
                                    shuffle=(valsampler is None),
                                    sampler=valsampler)
-
+    # ---------------------------------------------------------------------------------------------------------
+    
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
     
@@ -238,14 +239,6 @@ def main():
                 
                 pred_us = results['out_us']
                 pred_us_corr = results['corr_out_us']
-
-                # # forward nan check
-                # if not torch.isfinite(pred_lw).all() or not torch.isfinite(pred_uw).all() or not torch.isfinite(pred_us).all():
-                #     print(f"NaN/Inf detected in model output at epoch {epoch}, step {step}")
-                #     print("pred_lw", pred_lw.min().item(), pred_lw.max().item())
-                #     print("pred_uw", pred_uw.min().item(), pred_uw.max().item())
-                #     print("pred_us", pred_us.min().item(), pred_us.max().item())
-                #     raise RuntimeError("NaN in forward outputs")
 
                 # 2번 수식의 max F_hat
                 pred_uw_prob = pred_uw.detach().softmax(dim=1)
@@ -356,45 +349,18 @@ def main():
                 # ---------------------------------------------------------------------
                 
                 # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
-                # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
                 label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
                 unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
-                
-                # weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.lr_period, dtype=torch.float32))
-                # weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
-                # weight_label = 2 - 0.5 * weight_unlabel
 
-                # loss = weight_label * label_loss + weight_unlabel * unlabel_loss
                 loss = label_loss + unlabel_loss
-
-            # if not torch.isfinite(loss):
-            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}")
-            #     print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
-            #     print("loss_us", loss_us.item(), "loss_u_kl", loss_u_kl.item(), "loss_u_corr", loss_u_corr.item())
-                
-            #     raise RuntimeError("NaN in loss")
-            # # --- 1. Loss NaN 체크 (강제 종료 대신 continue) ---
-            # if not torch.isfinite(loss):
-            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}. Skipping this batch!")
-            #     # 디버깅용 출력
-            #     # print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
-            #     optimizer.zero_grad()
-            #     continue # 다음 배치로 넘어감!
             
             optimizer.zero_grad()
             # loss.backward()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
 
-            # grad_has_nan = False
-            # for name, p in model.named_parameters():
-            #     if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
-            #         print(f"Grad NaN/Inf in {name} at epoch {epoch}, step {step}")
-            #         grad_has_nan = True
-            #         break # 하나라도 발견되면 어차피 스킵되니 더 찾을 필요 없음
                 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            # optimizer.step()
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -441,14 +407,6 @@ def main():
                 
             del results
     
-    
-        # region step 끝
-        
-        # if tcfg.dataset == 'cityscapes':
-        #     eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
-        # else:
-            # eval_mode = 'original'
-            
         torch.cuda.empty_cache()
         res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=tcfg.eval_mode)
         

@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.3.2_LTU"
+    model_name: str     = "v1.4.0_LTU"
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
@@ -51,8 +51,8 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     batch_size: int     = 8
-    # lr: float           = 5e-4 # 5e-3
-    lr: float           = 2e-4 # 5e-3
+    lr: float           = 5e-4 # 5e-3
+    # lr: float           = 2e-4 # 5e-3
     decay_power: float   = 0.9
     lr_multi: float     = 1.0
     num_epochs: int     = 800

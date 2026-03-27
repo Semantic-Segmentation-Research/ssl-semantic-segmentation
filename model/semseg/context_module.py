@@ -6,16 +6,6 @@ from timm.layers import DropPath
 from collections import OrderedDict
 
 # region - ASPPConv
-# def ASPPConv(in_channels, out_channels, atrous_rate):
-#     block = nn.Sequential(
-#         nn.Conv2d(in_channels, out_channels, 3, 
-#                   padding=atrous_rate,
-#                   dilation=atrous_rate, 
-#                   bias=False),
-#         nn.BatchNorm2d(out_channels),
-#         nn.ReLU(True)
-#         )
-#     return block
 def ASPPConv(in_channels, out_channels, atrous_rate):
     block = nn.Sequential(
         # depthwise conv: groups=in_channels keeps channels separate
@@ -271,8 +261,8 @@ class FlowAtt(nn.Module):
         
         x = self.star_layer.reduction(feat)
         x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
-        # x = self.star_layer.relu(x1) * x2
-        x = self.star_layer.relu(x1) + x2
+        x = self.star_layer.relu(x1) * x2
+        # x = self.star_layer.relu(x1) + x2
         x = self.star_layer.dwconv2(self.star_layer.g(x))
         
         x = input + self.star_layer.drop_path(x)
@@ -299,7 +289,7 @@ class FlowAtt(nn.Module):
         
         attn = torch.bmm(q, k.transpose(1, 2)).float()
         # 안정화를 위해 NaN/Inf를 0/대규모 값으로 치환
-        attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
+        # attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         # attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
         xca = torch.bmm(attn, v)
