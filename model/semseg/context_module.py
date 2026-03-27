@@ -289,7 +289,7 @@ class FlowAtt(nn.Module):
         
         attn = torch.bmm(q, k.transpose(1, 2)).float()
         # 안정화를 위해 NaN/Inf를 0/대규모 값으로 치환
-        # attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
+        attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         # attn /= self.temperature
         attn = F.softmax(attn, dim=-1)
         xca = torch.bmm(attn, v)
