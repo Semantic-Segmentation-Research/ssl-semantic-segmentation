@@ -22,9 +22,9 @@ class ModelConfig:
     norm_layer: str     = "BatchNorm2d"
     
     input_channel : int = 3
-    nf: int       = 48
-    bttln_nf: int  = 96
-    bttln_exp: int = 3
+    nf: int       = 32
+    bttln_nf: int  = 48
+    bttln_exp: int = 2
     groups: int     = 1
     width_per_group:int = 64
     num_blocks: list = field(default_factory=lambda: [3, 4, 6, 3])

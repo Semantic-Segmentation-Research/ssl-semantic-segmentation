@@ -80,14 +80,18 @@ class ResNet(nn.Module):
         self.base_width = mcfg.width_per_group
         
         
-        self.gamma_layer1 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*2)
-        self.gamma_layer2 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*mcfg.bttln_exp)
+        self.gamma_layer1 = clayers.LayerScale(input_ch=mcfg.input_channel, 
+                                               out_ch=mcfg.nf, 
+                                               gamma_channel=mcfg.nf)
+        self.gamma_layer2 = clayers.LayerScale(input_ch=mcfg.bttln_nf*mcfg.bttln_exp, 
+                                               out_ch=mcfg.bttln_nf*mcfg.bttln_exp, 
+                                               gamma_channel=mcfg.bttln_nf*mcfg.bttln_exp)
 
-        self.init_conv = clayers.InitConv(mcfg)
-        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.ds_conv = nn.Conv2d(mcfg.nf*2, mcfg.nf*2, kernel_size=3, stride=2, padding=1, bias=False)
+        self.init_conv = clayers.InitConv(mcfg.input_channel, mcfg.nf)
+
+        self.ds_conv = nn.Conv2d(mcfg.nf, mcfg.bttln_nf, kernel_size=3, stride=2, padding=1, bias=False)
         
-        self.layer1 = self._make_layer(block, mcfg.nf, layers[0])
+        self.layer1 = self._make_layer(block, mcfg.bttln_nf, layers[0])
         self.layer2 = self._make_layer(block, mcfg.nf*mcfg.enc_c2_ratio, layers[1], stride=2,
                                        dilate=mcfg.replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, mcfg.nf*mcfg.enc_c3_ratio, layers[2], stride=2,

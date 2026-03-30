@@ -28,10 +28,10 @@ class DeepLabV3Plus(nn.Module):
             self.backbone = xception(True)
 
         self.decoder_layer = nn.Sequential(OrderedDict([
-            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*13,
+            ('strong', context.SegHead(in_ch= mcfg.bttln_exp * (mcfg.bttln_nf + mcfg.nf*mcfg.enc_c2_ratio + mcfg.nf*mcfg.enc_c3_ratio + mcfg.nf*mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
+            ('weak', context.SegHead(in_ch= 36 + mcfg.bttln_nf * mcfg.bttln_exp,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))
@@ -51,8 +51,8 @@ class DeepLabV3Plus(nn.Module):
         #                                             nclass=mcfg.num_classes)
         
         self.flow_layer = nn.Sequential(OrderedDict([
-            ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
-                                  reduc_ch=mcfg.bttln_exp,
+            ("c1", context.FlowAtt(channel=mcfg.bttln_nf*mcfg.bttln_exp,
+                                  reduc_ch=mcfg.bttln_nf,
                                   exp_ratio=4)),
             ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
                                   reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
@@ -69,19 +69,15 @@ class DeepLabV3Plus(nn.Module):
             ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
                                  low_ch=36,
                                  dilations=mcfg.dilations,
-                                 ratio=6)),
-            ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
-                                 low_ch=36,
-                                 dilations=mcfg.dilations,
-                                 ratio=2))]))
+                                 ratio=4))]))
+            # ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
+            #                      low_ch=36,
+            #                      dilations=mcfg.dilations,
+            #                      ratio=2))]))
         
-        # self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
         self.fuse = nn.Sequential(OrderedDict([
             # (112, 112, 114)
-            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
+            ("c1", nn.Sequential(nn.Conv2d(mcfg.bttln_nf*mcfg.bttln_exp, 64, 3, padding=1, bias=True),
                                  nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
@@ -142,11 +138,7 @@ class DeepLabV3Plus(nn.Module):
             c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            
-            # c1_us1, c4_us1 = self.aspp_layer.c14(c1_us, c4_us)
-            # c1_us2, c2_us1 = self.aspp_layer.c12(c1_us, c2_us)
-            # c1_us = c1_us1 + c1_us2
-            
+                     
             feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
             out_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
             result_dict['out_us'] = out_us
@@ -189,6 +181,7 @@ class DeepLabV3Plus(nn.Module):
             
             c_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], axis=1)
             c_lw = self.cls(c_lw)
+            # 디코더에서 low-level feature -> high-level feature로
             output_mask = F.interpolate(c_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
             
             result_dict['mask_lw'] = output_mask
