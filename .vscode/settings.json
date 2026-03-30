@@ -1,4 +1,5 @@
 {
+    // "python.pythonPath": "/opt/conda/bin/python",
     "editor.semanticHighlighting.enabled": false,
     "editor.tokenColorCustomizations": {
         "textMateRules": [
@@ -6,6 +7,25 @@
                 "scope": ["constant.other.caps.python"],
                 "settings": {
                     "foreground": "#ff953e",
+                }
+            },
+            {
+                "scope": ["storage.type.function.python"],
+                "settings": {
+                    "foreground": "#50FA7B",
+                }
+            },
+            {
+                "scope": ["storage.type.class.python"],
+                "settings": {
+                    "foreground": "#FFB86C",
+                    "fontStyle": "bold italic",
+                }
+            },
+            {
+                "scope": ["string.quoted.single.python"],
+                "settings": {
+                    "foreground": "#96D0FF",
                 }
             },
             {
@@ -22,7 +42,7 @@
                     "fontStyle": "bold"
                 }
             },
-             {
+            {
                 "scope":["variable.parameter.function.language.python"],
                 "settings": {
                     "foreground": "#D4D4D4",
