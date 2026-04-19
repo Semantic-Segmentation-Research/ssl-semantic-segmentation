@@ -5,8 +5,6 @@ import os
 import os.path as osp
 import random
 
-import kornia.augmentation as K
-
 from util import utils
 # from dataset.transform import *
 import dataset.transform as trf

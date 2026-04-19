@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  ssl_ltu:
+    image: cuda121-corrmatch:v2
+    shm_size: 28g
+    volumes:
+      - /mnt/c/Users/yonghyun/Desktop/dev/ssl-semantic-segmentation:/home/dev/ssl-semantic-segmentation
+      - /mnt/c/Users/yonghyun/Desktop/segmentation_datasets/cityscapes:/home/dev/data
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+      - /usr/lib/wsl/drivers:/usr/lib/wsl/drivers:ro
+
+    working_dir: /home/dev/ssl-semantic-segmentation
+    command: /bin/bash -c "service ssh restart && tail -f /dev/null"
+    restart: no
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]

@@ -194,7 +194,8 @@ def main():
         
         
     # region - Train
-    scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
+    # scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
+    scaler = torch.cuda.amp.GradScaler(init_scale=1024.)
     for epoch in range(start_epoch, tcfg.num_epochs):
         total_aux_loss.reset()
         total_loss.reset()
