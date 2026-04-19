@@ -6,210 +6,204 @@ from torch import nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
+import os.path as osp
+from dataset import transform as dtf
+from model.semseg import context_module as context
+from collections import OrderedDict
 
-
+# region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, cfg, mcfg, pretrained_path):
+    def __init__(self, tcfg, mcfg, pretrained_path):
         super(DeepLabV3Plus, self).__init__()
-        self.is_corr = True
-        self.pretrained_path = pretrained_path
+        self.tcfg = tcfg
+        self.mcfg = mcfg
 
+        if not osp.exists(pretrained_path): pretrained_path = False
+            
         if 'resnet' in mcfg.backbone:
             backbone = resnet.__dict__[mcfg.backbone]
-            self.backbone = backbone(pretrained_path,
-                                     multi_grid=cfg['multi_grid'],
-                                     replace_stride_with_dilation=cfg['replace_stride_with_dilation'])
+            self.backbone = backbone(pretrained_path, mcfg=mcfg)
         else:
             assert mcfg.backbone == 'xception'
             self.backbone = xception(True)
 
-        low_channels = 256
-        high_channels = 2048
-
-        self.head = ASPPModule(high_channels, cfg['dilations'])
-
-        self.reduce = nn.Sequential(nn.Conv2d(low_channels, 48, 1, bias=False),
-                                    nn.BatchNorm2d(48),
-                                    nn.ReLU(True))
-        self.fuse = nn.Sequential(nn.Conv2d(high_channels // 8 + 48, 256, 3, padding=1, bias=False),
-                                  nn.BatchNorm2d(256),
-                                  nn.ReLU(True),
-                                  nn.Conv2d(256, 256, 3, padding=1, bias=False),
-                                  nn.BatchNorm2d(256),
-                                  nn.ReLU(True))
-
-        self.classifier = nn.Conv2d(256, mcfg.num_classes, 1, bias=True)
-
-
-        if self.is_corr:
-            self.corr = Corr(nclass=mcfg.num_classes)
-            self.proj = nn.Sequential(
-                nn.Conv2d(2048, 256, kernel_size=3, stride=1, padding=1, bias=True),
-                nn.BatchNorm2d(256),
-                nn.ReLU(inplace=True),
-                nn.Dropout2d(0.1),
-            )
-
-    def forward(self, x, need_fp=False, use_corr=False):
+        self.decoder_layer = nn.Sequential(OrderedDict([
+            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*13,
+                                       mid_ch=256,
+                                       out_ch=mcfg.num_classes)),
+            ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
+                                     mid_ch=256,
+                                     out_ch=mcfg.num_classes))
+        ]))
+        
+        self.xca_layer = nn.Sequential(OrderedDict([
+            ("c4", context.CrossCovarianceAtt(reduc_in_ch=mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
+                                                reduc_out_ch=mcfg.num_classes,
+                                                mid_ch=128,
+                                                output_size=self.tcfg.crop_size,
+                                                nclass=mcfg.num_classes))
+        ]))
+        self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
+                                                    in_ch=mcfg.nf*mcfg.bttln_exp,
+                                                    in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
+                                                    ratio=2,
+                                                    dilations=mcfg.dilations,
+                                                    nclass=mcfg.num_classes)
+        
+        self.flow_layer = nn.Sequential(OrderedDict([
+            ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
+                                  reduc_ch=mcfg.bttln_exp,
+                                  exp_ratio=4)),
+            ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
+                                  exp_ratio=4)),
+            ("c3", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
+                                  exp_ratio=4)),
+            ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
+                                  exp_ratio=4)
+             )]))
+        
+        self.aspp_layer = nn.Sequential(OrderedDict([
+            ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
+                                 low_ch=36,
+                                 dilations=mcfg.dilations,
+                                 ratio=6)),
+            ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
+                                 low_ch=36,
+                                 dilations=mcfg.dilations,
+                                 ratio=2))]))
+        
+        # self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
+        # self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
+        self.fuse = nn.Sequential(OrderedDict([
+            # (112, 112, 114)
+            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (56, 56, 288)
+            ("c2", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, 114, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(114),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(114, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (28, 28, 576)
+            ("c3", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 )),
+            # (28, 28, 864)
+            ("c4", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
+                                 nn.ReLU(inplace=True),
+                                 nn.Dropout2d(0.1),
+                                 ))
+        ]))
+        
+        self.cls = nn.Conv2d(64*4, mcfg.num_classes, 1, padding=0, bias=True)
+        
+    # region forward
+    def forward(self, x, mode='train'):
         result_dict = {}
-        h, w = x.shape[-2:]
+        image_height, image_width = x.shape[2:]
 
-        feats = self.backbone.base_forward(x)
-        c1, c4 = feats[0], feats[-1]
-
-        if need_fp:
-            feats_decode = self._decode(torch.cat((c1, nn.Dropout2d(0.5)(c1))), torch.cat((c4, nn.Dropout2d(0.5)(c4))))
-            outs = self.classifier(feats_decode)
-            outs = F.interpolate(outs, size=(h, w), mode="bilinear", align_corners=True)
+        c1, c2, c3, c4 = self.backbone.base_forward(x)
+        if mode =='train':
+            c1_lw_uw, c1_us = torch.split(c1, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c2_lw_uw, c2_us = torch.split(c2, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c3_lw_uw, c3_us = torch.split(c3, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
+            c4_lw_uw, c4_us = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
+            # ---------------- Unlabel Strong Part ----------------
+            c1_us = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_us)
+            c2_us = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_us)
+            c3_us = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_us)
+            c4_us = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_us)
+            
+            c1_us = F.interpolate(c1_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            
+            # c1_us1, c4_us1 = self.aspp_layer.c14(c1_us, c4_us)
+            # c1_us2, c2_us1 = self.aspp_layer.c12(c1_us, c2_us)
+            # c1_us = c1_us1 + c1_us2
+            
+            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
+            out_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['out_us'] = out_us
+            
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=out_us, aug_type='strong')
+            result_dict['corr_out_us'] = result_corr["corr_dec_out"]
+            # ---------------------------------------------------------
+            
+            # ---------------- label+unlabel Weak Part ----------------
+            c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
+                torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
+                torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
+                )
+            
+            feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
+            outs            = self.decoder_layer.weak(feature, size=(image_height, image_width))
+
             out, out_fp = outs.chunk(2)
-            if use_corr:
-                proj_feats = self.proj(c4) # 채널수 줄이는 연산
-                corr_out_dict = self.corr(proj_feats, out)
-                
-                result_dict['binary_norm_corr_map'] = corr_out_dict['binary_norm_corr_map']
-                
-                corr_out = corr_out_dict['corr_dec_out']
-                corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
-                
-                result_dict['corr_out'] = corr_out
+            result_c4corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
             
-            result_dict['out'] = out
+            result_dict['binary_norm_corr_map'] = result_c4corr["binary_norm_corr_map"]
+            result_dict['corr_out'] = result_c4corr["corr_dec_out"]
             result_dict['out_fp'] = out_fp
-
-            return result_dict
-
-        feats_decode = self._decode(c1, c4)
-        out = self.classifier(feats_decode)
-        out = F.interpolate(out, size=(h, w), mode="bilinear", align_corners=True)
-        if use_corr:
-            proj_feats = self.proj(c4)
-            corr_out_dict = self.corr(proj_feats, out)
+            # ---------------------------------------------------------
             
-            result_dict['binary_norm_corr_map'] = corr_out_dict['binary_norm_corr_map']
+            # ----------------------- label Part -----------------------
+            # output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
+            #                                        c2_lw_uw[:self.tcfg.batch_size],
+            #                                        c3_lw_uw[:self.tcfg.batch_size],
+            #                                        c4_lw_uw[:self.tcfg.batch_size]])
             
-            corr_out = corr_out_dict['corr_dec_out']
-            corr_out = F.interpolate(corr_out, size=(h, w), mode="bilinear", align_corners=True)
-            result_dict['corr_out'] = corr_out
+            c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
+            c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
+            c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
+            c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            
+            c1_lw = self.fuse.c1(c1_lw)
+            c2_lw = self.fuse.c2(c2_lw)
+            c3_lw = self.fuse.c3(c3_lw)
+            c4_lw = self.fuse.c4(c4_lw)
+            
+            c2_lw = F.interpolate(c2_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            
+            c_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], axis=1)
+            c_lw = self.cls(c_lw)
+            output_mask = F.interpolate(c_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            
+            result_dict['mask_lw'] = output_mask
+            # ---------------------------------------------------------
+            
+        elif mode == 'test':
+            c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
+            feature         = torch.cat([c1_us, c4_us], dim=1)
+            out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            
         result_dict['out'] = out
-        return result_dict
-
-    def _decode(self, c1, c4):
-        c4 = self.head(c4)
-        c4 = F.interpolate(c4, size=c1.shape[-2:], mode="bilinear", align_corners=True)
-
-        c1 = self.reduce(c1)
-
-        feature = torch.cat([c1, c4], dim=1)
-        feature = self.fuse(feature)
-
-        return feature
-
-
-def ASPPConv(in_channels, out_channels, atrous_rate):
-    block = nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, padding=atrous_rate,
-                                    dilation=atrous_rate, bias=False),
-                          nn.BatchNorm2d(out_channels),
-                          nn.ReLU(True))
-    return block
-
-
-class ASPPPooling(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ASPPPooling, self).__init__()
-        self.gap = nn.Sequential(nn.AdaptiveAvgPool2d(1),
-                                 nn.Conv2d(in_channels, out_channels, 1, bias=False),
-                                 nn.BatchNorm2d(out_channels),
-                                 nn.ReLU(True))
-
-    def forward(self, x):
-        h, w = x.shape[-2:]
-        pool = self.gap(x)
-        return F.interpolate(pool, (h, w), mode="bilinear", align_corners=True)
-
-
-class ASPPModule(nn.Module):
-    def __init__(self, in_channels, atrous_rates):
-        super(ASPPModule, self).__init__()
-        out_channels = in_channels // 8
-        rate1, rate2, rate3 = atrous_rates
-
-        self.b0 = nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False),
-                                nn.BatchNorm2d(out_channels),
-                                nn.ReLU(True))
-        self.b1 = ASPPConv(in_channels, out_channels, rate1)
-        self.b2 = ASPPConv(in_channels, out_channels, rate2)
-        self.b3 = ASPPConv(in_channels, out_channels, rate3)
-        self.b4 = ASPPPooling(in_channels, out_channels)
-
-        self.project = nn.Sequential(nn.Conv2d(5 * out_channels, out_channels, 1, bias=False),
-                                     nn.BatchNorm2d(out_channels),
-                                     nn.ReLU(True))
-
-    def forward(self, x):
-        feat0 = self.b0(x)
-        feat1 = self.b1(x)
-        feat2 = self.b2(x)
-        feat3 = self.b3(x)
-        feat4 = self.b4(x)
-        y = torch.cat((feat0, feat1, feat2, feat3, feat4), 1)
-        return self.project(y)
-
-
-class Corr(nn.Module):
-    def __init__(self, nclass=21):
-        super(Corr, self).__init__()
-        self.nclass = nclass
-        self.conv1 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
-        self.conv2 = nn.Conv2d(256, self.nclass, kernel_size=1, stride=1, padding=0, bias=True)
-
-    # Encoder output & Decoder output
-    def forward(self, enc_out, dec_out):
-        result_dict = {}
-        
-        enc_height, enc_width = enc_out.shape[-2:]
-        dec_height, dec_width = dec_out.shape[-2:]
-        
-        dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
-        # feature = F.interpolate(enc_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
-        
-        f1 = rearrange(self.conv1(enc_out), 'n c h w -> n c (h w)')
-        f2 = rearrange(self.conv2(enc_out), 'n c h w -> n c (h w)')
-        dec_out_reshape = rearrange(dec_out, 'n c h w -> n c (h w)')
-        
-        # 수식 4번
-        corr_map = torch.matmul(f1.transpose(1, 2), f2) / torch.sqrt(torch.tensor(f1.shape[1]).float())
-        corr_map = F.softmax(corr_map, dim=-1)
-        
-        corr_map_sample = self.sample(corr_map.detach(), enc_height, enc_width)
-        # 7번 수식에서 C_hat
-        result_dict['binary_norm_corr_map'] = self.normalize_corr_map(corr_map_sample, enc_height, enc_width, dec_height, dec_width)
-        
-        # 5번 수식
-        result_dict['corr_dec_out'] = rearrange(torch.matmul(dec_out_reshape, corr_map), 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         
         return result_dict
-
-
-    def sample(self, corr_map, h_in, w_in):
-        index = torch.randint(0, h_in * w_in - 1, [128])
-        corr_map_sample = corr_map[:, index.long(), :]
-        return corr_map_sample
-    
-    
-    # region - region propagation
-    def normalize_corr_map(self, corr_map, h_in, w_in, h_out, w_out):
-        n, m = corr_map.shape[:2]
-        
-        corr_map = rearrange(corr_map, 'n m (h w) -> (n m) 1 h w', h=h_in, w=w_in)
-        corr_map = F.interpolate(corr_map, (h_out, w_out), mode='bilinear', align_corners=True)
-
-        corr_map = rearrange(corr_map, '(n m) 1 h w -> (n m) (h w)', n=n, m=m)
-        # Min - Max scaling (normalization), 수식 7번
-        range_ = torch.max(corr_map, dim=1, keepdim=True)[0] - torch.min(corr_map, dim=1, keepdim=True)[0]
-        temp_map = ((- torch.min(corr_map, dim=1, keepdim=True)[0]) + corr_map) / range_
-        corr_map = (temp_map > 0.5)
-        
-        norm_corr_map = rearrange(corr_map, '(n m) (h w) -> n m h w', n=n, m=m, h=h_out, w=w_out)
-        
-        return norm_corr_map

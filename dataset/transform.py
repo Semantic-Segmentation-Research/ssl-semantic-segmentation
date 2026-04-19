@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 import torch
 from torchvision import transforms
+import torch.nn.functional as F
 
 palette = [128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153, 153, 153, 153, 250, 170, 30,
            220, 220, 0, 107, 142, 35, 152, 251, 152, 70, 130, 180, 220, 20, 60, 255, 0, 0, 0, 0, 142, 0, 0, 70,
@@ -82,6 +83,20 @@ def blur(img, p=0.5):
     return img
 
 
+def gaussian_blur_feature(x, kernel_size=3, sigma=1.0):
+    # 가우시안 커널 생성
+    x_range = torch.arange(kernel_size, device=x.device) - (kernel_size - 1) / 2
+    gauss = torch.exp(-x_range**2 / (2 * sigma**2))
+    gauss = gauss / gauss.sum()
+    
+    # 2D 커널로 확장 [C, 1, K, K]
+    kernel = gauss[:, None] * gauss[None, :]
+    kernel = kernel.expand(x.shape[1], 1, kernel_size, kernel_size).to(x.device)
+    
+    # Depthwise Convolution으로 블러 적용
+    return F.conv2d(x, kernel, groups=x.shape[1], padding=kernel_size//2)
+
+
 def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
     mask = torch.zeros(img_size, img_size) # img(h,w) 정사각형크기의 0으로 된 mask tensor
     if random.random() > p: # 확률에 따른 mask반환, 값이 p보다 크면 제로마스크 리턴
@@ -104,6 +119,41 @@ def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3,
     mask[y:y + cutmix_h, x:x + cutmix_w] = 1 # mask의 y축값 ~ y+ bbox height까지, x축값 ~ x+ bbox width까지를 1로 채움
 
     return mask
+
+
+def obtain_cutmix_box_gpu(batch_size, img_h, img_w, device, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
+# 1. 전체 배치에 대한 CutMix 적용 여부 결정 (한 번에 계산)
+    apply_cutmix = torch.rand(batch_size, device=device) < p  # [B]
+    
+    # 기본 마스크 생성 (B, 1, H, W)
+    mask = torch.zeros((batch_size, 1, img_h, img_w), device=device)
+    
+    # 2. 적용해야 할 인덱스들에 대해서만 루프 수행
+    indices = torch.where(apply_cutmix)[0]
+    
+    for i in indices:
+        # 면적(size)과 비율(ratio)을 torch.rand로 생성
+        # size = (min + (max-min) * rand) * total_area
+        target_size = (size_min + (size_max - size_min) * torch.rand(1, device=device)) * img_h * img_w
+        
+        while True:
+            # ratio_1 ~ ratio_2 사이의 랜덤 값
+            ratio = ratio_1 + (ratio_2 - ratio_1) * torch.rand(1, device=device)
+            
+            cutmix_w = torch.sqrt(target_size / ratio).int()
+            cutmix_h = torch.sqrt(target_size * ratio).int()
+            
+            if cutmix_w < img_w and cutmix_h < img_h:
+                # 좌표를 torch.randint로 생성
+                x = torch.randint(0, img_w - cutmix_w, (1,), device=device)
+                y = torch.randint(0, img_h - cutmix_h, (1,), device=device)
+                break
+        
+        # 3. GPU 메모리 내에서 직접 할당
+        mask[i, 0, y : y + cutmix_h, x : x + cutmix_w] = 1.0
+        
+    return mask
+
 
 def img_aug_autocontrast(img, scale=None):
     return ImageOps.autocontrast(img)

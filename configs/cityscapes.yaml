@@ -22,6 +22,6 @@ conf_thresh: 0.0
 backbone: resnet101
 # pretrain : "/home/dev/CorrMatch/pretrained/resnet101.pth"
 multi_grid: False
-replace_stride_with_dilation: [False, True, True]
+replace_stride_with_dilation: [False, False, True]
 dilations: [12, 24, 36]
 thresh_init: 0.85

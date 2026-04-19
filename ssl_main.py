@@ -13,14 +13,14 @@ from torch import nn
 from torchmetrics import MeanMetric
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-from torch.optim import SGD
+from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib
 matplotlib.use('agg')
 import yaml
 
-from dataset.semi import SemiDataset, GPUAugmentation
+from dataset.semi import SemiDataset
 from ssl_tensorboard import SSLTensorBoard
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
@@ -31,19 +31,9 @@ from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
 
-from configuration import TrainConfig, ModelConfig
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-
-parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-parser.add_argument('--config', type=str, default=osp.join(osp.dirname(__file__), 'configs/cityscapes.yaml'))
-parser.add_argument('--labeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/labeled.txt"))
-parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/1_4/unlabeled.txt"))
-parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
-parser.add_argument('--local_rank', default=0, type=int)
-parser.add_argument('--port', default=0, type=int)
-
+from configuration import DataConfig, TrainConfig, ModelConfig
+from losses import LossFactory
+from torch.optim.lr_scheduler import LambdaLR
 
 
 def init_seeds(seed=0, cuda_deterministic=False):
@@ -60,76 +50,82 @@ def init_seeds(seed=0, cuda_deterministic=False):
         cudnn.benchmark = True
 
 
+# region - test
+# def test(model, dataloader, img_us, cutmix_box):
+    # img_uw, img_us2, ignore_mask, _, _ = next(iter(dataloader))
+def test(model, img_uw, img_us, ignore_mask, cutmix_box):
+    indices = torch.randperm(img_uw.size(0), device=device)
+    ignore_mask = ignore_mask[indices]
+    
+    with torch.no_grad():
+        model.eval()
+        res_u_w_pred = model(img_uw[indices], mode='test')
+        
+        logit_u_w = res_u_w_pred['out'].detach()
+        prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
+        conf_u_w, mask_u_w = prob_u_w.max(dim=1) # pseudo label
+        
+        img_us[cutmix_box.unsqueeze(1).expand(img_us.shape) == 1] = \
+            img_us[indices][cutmix_box.unsqueeze(1).expand(img_us.shape) == 1]
+        
+        return conf_u_w, mask_u_w, img_us, ignore_mask
+
+
 # region - main
 def main():
-    args = parser.parse_args() # arg parser 정의
-
-    cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader) # yaml 파일 로드 (config 옵션 쉽게 꺼내쓰기 위함)
-
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    rank, world_size = setup_distributed(port=args.port)
-
-    if rank == 0:
-        logger.info(f'{pprint.pformat(cfg)}\n')
-
+    rank, world_size = setup_distributed(port=tcfg.port)
     init_seeds(0, False)
 
-    model = DeepLabV3Plus(cfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
-
+    model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
+    for name, module in model.named_modules():
+        if name.startswith('backbone') or name == '': continue  
+        utils.init_non_backbone(module)
+    
     if rank == 0:
         logger.info(f'Total params: {count_params(model):.1f}M\n')
 
-    optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr}, # 옵티마이저 하이퍼파라미터 세팅
-                     {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-                      'lr': tcfg.lr * cfg['lr_multi']}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
-
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
-    model.cuda()
+    model.to(device)
     
     if world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
-    if tcfg.LossConfig().name == 'CELoss':
-        criterion_l = nn.CrossEntropyLoss(**cfg['criterion']['kwargs']).cuda(local_rank)
-    elif tcfg.LossConfig().name == 'OHEM':
-        criterion_l = ProbOhemCrossEntropy2d(**cfg['criterion']['kwargs']).cuda(local_rank)
-    else:
-        raise NotImplementedError(f'{tcfg.LossConfig().name} criterion is not implemented')
-
-    criterion_u = nn.CrossEntropyLoss(reduction='none').cuda(local_rank)
-    criterion_kl = nn.KLDivLoss(reduction='none').cuda(local_rank)
+    losses = LossFactory()
+    loss_ce     = losses.label(mode='ce', device=device)
+    loss_ohem   = losses.label(mode='ohem', device=device)
+    loss_dice   = losses.label(mode='dice', device=device)
     
+    loss_us_cr = losses.unlabel(mode='us_cr', device=device)
+    loss_uw_cr = losses.unlabel(mode='uw_cr', device=device)
+    loss_kl    = losses.unlabel(mode='kl', device=device)
 
-    unlabel_train_set = SemiDataset(name=tcfg.dataset, 
-                                      root=tcfg.data_root, 
-                                      mode='train_u',
-                                      size=tcfg.crop_size, 
-                                      id_path=args.unlabeled_id_path)
+    unlabel_train_set = SemiDataset(root=tcfg.data_root, 
+                                    mode='train_u',
+                                    size=tcfg.crop_size,
+                                    id_path=dcfg.unlabeled_id_path)
     
-    label_train_set = SemiDataset(name=tcfg.dataset,
-                                    root=tcfg.data_root, 
-                                    mode='train_l',
-                                    size=tcfg.crop_size, 
-                                    id_path=args.labeled_id_path, 
-                                    nsample=len(unlabel_train_set.ids))
+    label_train_set = SemiDataset(root=tcfg.data_root, 
+                                  mode='train_l',
+                                  id_path=dcfg.labeled_id_path,
+                                  size=tcfg.crop_size, 
+                                  nsample=len(unlabel_train_set.ids))
     
-    validation_set = SemiDataset(name=tcfg.dataset, 
-                                 root=tcfg.data_root,
-                                 valid_path=args.val_id_path, 
-                                 mode='val')
+    validation_set = SemiDataset(root=tcfg.data_root,
+                                 mode='val',
+                                 size=tcfg.crop_size,
+                                 valid_path=dcfg.val_id_path) 
 
-    aug_layer = GPUAugmentation(size=tcfg.crop_size).cuda()
     use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
-    
     trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
     label_train_loader = DataLoader(label_train_set, 
                                batch_size=tcfg.batch_size,
                                pin_memory=True, 
                                num_workers=tcfg.num_workers, 
                                drop_last=True, 
+                               shuffle=(trainsampler_l is None),
                                sampler=trainsampler_l)
     
     trainsampler_u = torch.utils.data.distributed.DistributedSampler(unlabel_train_set) if use_ddp else None
@@ -138,6 +134,7 @@ def main():
                                       pin_memory=True, 
                                       num_workers=tcfg.num_workers, 
                                       drop_last=True, 
+                                      shuffle=(trainsampler_u is None),
                                       sampler=trainsampler_u)
     
     valsampler = torch.utils.data.distributed.DistributedSampler(validation_set) if use_ddp else None
@@ -146,246 +143,324 @@ def main():
                                    pin_memory=True, 
                                    num_workers=tcfg.num_workers,
                                    drop_last=False, 
+                                   shuffle=(valsampler is None),
                                    sampler=valsampler)
 
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
     
-    num_total_steps = len(unlabel_train_loader) * tcfg.num_epochs
-    thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=cfg['thresh_init'])
+    steps_per_epoch = len(unlabel_train_loader)
+    num_total_steps = steps_per_epoch * tcfg.num_epochs
+    
+    # region optimizer
+    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
+    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    
+    optimizer = Adam(model.parameters(), lr=tcfg.lr)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
+    lr_cd = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * tcfg.lr_period,
+                                                      t_mul=1.,
+                                                      m_mul=0.5)
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_cd)
+    
+    thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=tcfg.thresh_init)
 
     previous_best = 0.0
-    total_loss              = MeanMetric().to(local_rank).cuda()
-    total_label_loss        = MeanMetric().to(local_rank).cuda()
-    total_label_loss_corr   = MeanMetric().to(local_rank).cuda()
-    total_loss_s            = MeanMetric().to(local_rank).cuda()
-    total_loss_w_fp         = MeanMetric().to(local_rank).cuda()
-    total_loss_corr_u       = MeanMetric().to(local_rank).cuda()
+    total_loss              = MeanMetric().to(device=device)
+    total_aux_loss          = MeanMetric().to(device=device)
+    total_label_loss        = MeanMetric().to(device=device)
+    total_label_loss_corr   = MeanMetric().to(device=device)
+    total_dice_loss         = MeanMetric().to(device=device)
+    total_loss_s            = MeanMetric().to(device=device)
+    total_loss_kl           = MeanMetric().to(device=device)
+    total_loss_w_fp         = MeanMetric().to(device=device)
+    total_loss_corr_u       = MeanMetric().to(device=device)
     
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
-
+    
+    start_epoch = 0
+    
+    if tcfg.resume:
+        latest_model = os.listdir(tcfg.model_save_dir)[-1]
+        checkpoint = torch.load(osp.join(tcfg.model_save_dir, latest_model), map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict']) 
+        start_epoch = checkpoint['epoch'] + 1
+        
+        logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
+        
+        
     # region - Train
-    for epoch in range(tcfg.num_epochs):
+    # scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
+    scaler = torch.cuda.amp.GradScaler(init_scale=1024.)
+    for epoch in range(start_epoch, tcfg.num_epochs):
+        total_aux_loss.reset()
         total_loss.reset()
         total_label_loss.reset()
         total_label_loss_corr.reset()
+        total_dice_loss.reset()
         total_loss_s.reset()
-        total_loss_kl = 0.0
+        total_loss_kl.reset()
         total_mask_ratio = 0.0
         
         if use_ddp:
-            label_train_loader.sampler.set_epoch(epoch) # epoch마다 shuffle seed 바꾸기 위한 작업
+            label_train_loader.sampler.set_epoch(epoch)
             unlabel_train_loader.sampler.set_epoch(epoch)
         
-        dataloader = zip(label_train_loader, unlabel_train_loader, unlabel_train_loader)
-
-        # region step 시작
-        # for step, ((label_image, label_mask, l_image_path),
-        #            (img_u_w, img_u_s, ignore_mask, cutmix_box, u_image_path),
-        #            (img_u_w_mix, img_u_s_mix, ignore_mask_mix, _, _)) in enumerate(dataloader):
-        for step, ((label_image, label_mask, l_image_path),
-                   (img_u, mask_u_raw, _),
-                   (img_u_mix, mask_u_mix_raw, _)) in enumerate(dataloader):
-            image, mask = image.cuda(), mask.cuda()
-            
-            if mode == 'train_l':
-                img_w, mask_w = aug_layer(image, mask, mode=mode)
-            else:
-                img_w, img_s, mask_w = aug_layer(image, mask, mode=mode)
-                
-            if step == 1: break
+        dataloader = zip(label_train_loader, unlabel_train_loader)
+        # with torch.autograd.set_detect_anomaly(True):
+        for step, ((img_lw, mask_lw, l_image_path), (img_uw, img_us, ignore_mask, cutmix_box, u_image_path)) in enumerate(dataloader):
+            # if step == 1: break
             start_event.record()
+        
+            img_lw, mask_lw = img_lw.cuda(non_blocking=True), mask_lw.cuda(non_blocking=True)
+            img_uw = img_uw.cuda(non_blocking=True)
+            img_us, ignore_mask = img_us.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
+            cutmix_box = cutmix_box.cuda(non_blocking=True)
             
-            label_image, label_mask = label_image.cuda(), label_mask.cuda()
-            img_u_w = img_u_w.cuda()
-            img_u_s, ignore_mask = img_u_s.cuda(), ignore_mask.cuda()
-            cutmix_box = cutmix_box.cuda()
-            img_u_w_mix = img_u_w_mix.cuda()
-            img_u_s_mix = img_u_s_mix.cuda()
-            ignore_mask_mix = ignore_mask_mix.cuda()
-            
-            
-            with torch.no_grad():
-                model.eval()
-                res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False) # unlabeled weak aug 모델학습
-                pred_u_w_mix = res_u_w_mix['out'].detach() # weak aug 데이터의 output, 예측
-                conf_u_w_mix = pred_u_w_mix.softmax(dim=1).max(dim=1)[0] # classes채널에서의 softmax 후 최대확률
-                mask_u_w_mix = pred_u_w_mix.argmax(dim=1) # pseudo label
-                img_u_s[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1] = \
-                    img_u_s_mix[cutmix_box.unsqueeze(1).expand(img_u_s.shape) == 1]
-                    
+            test_conf_uw, test_mask_uw, img_us, test_ignore_mask = test(model, img_uw, img_us, ignore_mask, cutmix_box)
             
             model.train()
-            label_batch_size, unlabel_batch_size = label_image.shape[0], img_u_w.shape[0]
+            label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
             
-            # region model 호출1
-            res_w = model(torch.cat((label_image, img_u_w)), need_fp=True, use_corr=True)
-
-            preds = res_w['out'] # 모델의 디코더 출력
-            preds_fp = res_w['out_fp'] # feature perturbation output
-            preds_corr = res_w['corr_out']
-            preds_corr_map = res_w['binary_norm_corr_map'].detach()
-            # 6번 수식의 z값이 pred_u_w_corr
-            pred_x_corr, pred_u_w_corr = preds_corr.split([label_batch_size, unlabel_batch_size])
-            pred_u_w_corr_map = preds_corr_map[label_batch_size:]
-            # pred_u_w_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
-            pred_x, pred_u_w = preds.split([label_batch_size, unlabel_batch_size]) # 라벨이미지와 언라벨이미지의 logits
-            pred_u_w_fp = preds_fp[label_batch_size:] # unlabeled weak 배치만
-
-            # region model 호출2
-            res_s = model(img_u_s, need_fp=False, use_corr=True)
-            pred_u_s1 = res_s['out']
-            pred_u_s1_corr = res_s['corr_out']
-
-            # pred_u_w = pred_u_w.detach()
-            # 2번 수식의 max F_hat
-            conf_u_w = pred_u_w.detach().softmax(dim=1).max(dim=1)[0]
-            mask_u_w = pred_u_w.detach().argmax(dim=1)
-
-            mask_u_w_cutmixed1, conf_u_w_cutmixed1, ignore_mask_cutmixed1 = mask_u_w.clone(), conf_u_w.clone(), ignore_mask.clone()
-            corr_map_u_w_cutmixed1 = pred_u_w_corr_map.clone()
-            b_sample, c_sample, _, _ = corr_map_u_w_cutmixed1.shape
-
-            cutmix_box_map = (cutmix_box == 1)
-
-            mask_u_w_cutmixed1[cutmix_box_map] = mask_u_w_mix[cutmix_box_map]
-            mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
-            conf_u_w_cutmixed1[cutmix_box_map] = conf_u_w_mix[cutmix_box_map]
-            ignore_mask_cutmixed1[cutmix_box_map] = ignore_mask_mix[cutmix_box_map]
-            cutmix_box_sample = rearrange(cutmix_box_map, 'n h w -> n 1 h w')
-            ignore_mask_cutmixed1_sample = rearrange((ignore_mask_cutmixed1 != 255), 'n h w -> n 1 h w')
-            # corr_map_u_w_cutmixed1: unlabel 이미지에 대한 c_hat
-            # ~cutmix_box_sample: cutmix를 할 영역의 반대 영역
-            # 따라서, 9번 수식에서 쓰이는 c_hat
-            corr_map_u_w_cutmixed1 = (corr_map_u_w_cutmixed1 * ~cutmix_box_sample * ignore_mask_cutmixed1_sample).bool()
-            # corr_map_u_w_cutmixed1 : 유사도가 높은 영역에서 cutmix box가 아닌 부분만 추출
-            thresh_controller.thresh_update(pred_u_w.detach(), ignore_mask_cutmixed1, update_g=True)
-            thresh_global = thresh_controller.get_thresh_global()
-
-            # 2번 수식
-            conf_filter_u_w = ((conf_u_w_cutmixed1 >= thresh_global) & (ignore_mask_cutmixed1 != 255))
-            # conf_filter_u_w : labeled + unlabeled 데이터에서 모델이 예측한 신뢰도에서 더 정확한 신뢰도만을 가져온것. dynamic threshold를 통한
-            conf_filter_u_w_without_cutmix = conf_filter_u_w.clone()
-            conf_filter_u_w_sample = rearrange(conf_filter_u_w_without_cutmix, 'n h w -> n 1 h w')
-
-            # 9번 수식에서 M_i * c_hat
-            # region_propagation - 더 정확한 경계를 얻기위함.
-            # conf_filter_u_w_sample: M_i
-            segments = (corr_map_u_w_cutmixed1 * conf_filter_u_w_sample).bool() # region-propa 재료
-            # segments : encoder에서의 유사도와 모델 예측 confidence를 곱해서 더더욱 중요한 부분만 살리기 위함
+            with torch.amp.autocast('cuda'):
+                results = model(torch.cat((img_lw, img_uw, img_us)))
             
-            ########### 9번 수식 전체 ############### region propag
-            for img_idx in range(b_sample):
-                for segment_idx in range(c_sample):
+                pred_mask_lw = results['mask_lw']
+                
+                pred_lw, pred_uw = results['out'].split([label_batch, unlabel_batch])
+                pred_lw_corr, pred_uw_corr = results['corr_out'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
+                pred_uw_fp = results['out_fp'][label_batch:]
+                # pred_uw_corr_map : labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
+                pred_uw_corr_map: bool = results['binary_norm_corr_map'][label_batch:].detach()
+                
+                pred_us = results['out_us']
+                pred_us_corr = results['corr_out_us']
 
-                    segment = segments[img_idx, segment_idx]
-                    segment_ori = corr_map_u_w_cutmixed1[img_idx, segment_idx]
-                    high_conf_ratio = torch.sum(segment)/torch.sum(segment_ori)
-                    if torch.sum(segment) == 0 or high_conf_ratio < thresh_global:
-                        continue
-                    unique_cls, count = torch.unique(mask_u_w_cutmixed1[img_idx][segment==1], return_counts=True)
+                # # forward nan check
+                # if not torch.isfinite(pred_lw).all() or not torch.isfinite(pred_uw).all() or not torch.isfinite(pred_us).all():
+                #     print(f"NaN/Inf detected in model output at epoch {epoch}, step {step}")
+                #     print("pred_lw", pred_lw.min().item(), pred_lw.max().item())
+                #     print("pred_uw", pred_uw.min().item(), pred_uw.max().item())
+                #     print("pred_us", pred_us.min().item(), pred_us.max().item())
+                #     raise RuntimeError("NaN in forward outputs")
 
-                    if torch.max(count) / torch.sum(count) > thresh_global:
-                        top_class = unique_cls[torch.argmax(count)] # 8번수식 k*
-                        mask_u_w_cutmixed1[img_idx][segment_ori==1] = top_class # 10번 수식
-                        conf_filter_u_w_without_cutmix[img_idx] = conf_filter_u_w_without_cutmix[img_idx] | segment_ori
+                # 2번 수식의 max F_hat
+                pred_uw_prob = pred_uw.detach().softmax(dim=1)
+                pred_conf_uw, pred_mask_uw = pred_uw_prob.max(dim=1)
+
+                pred_mask_uw_cutmixed, pred_conf_uw_cutmixed, ignore_mask_cutmixed = pred_mask_uw.clone(), pred_conf_uw.clone(), ignore_mask.clone()
+                pred_corr_map_uw_cutmixed: bool = pred_uw_corr_map.clone()
+
+                # -------------------------- Test 결과를 모델 예측에 cutmix로 넣기 --------------------------
+                cutmix_box = (cutmix_box == 1).squeeze(dim=1)
+                pred_mask_uw_cutmixed[cutmix_box] = test_mask_uw[cutmix_box]
+                pred_conf_uw_cutmixed[cutmix_box] = test_conf_uw[cutmix_box]
+                ignore_mask_cutmixed[cutmix_box] = test_ignore_mask[cutmix_box]
+                # ------------------------------------------------------------------------------------------
+                
+                # ------------------------ uw의 corr에 cutmix 부분은 제거 ------------------------
+                cutmix_box = rearrange(cutmix_box, 'n h w -> n 1 h w')
+                ignore_mask_cutmixed_arrange = rearrange((ignore_mask_cutmixed != 255), 'n h w -> n 1 h w')
+                # cutmix된 부분은 모델의 예측이 아닌 test에서 얻은 예측을 사용하기 때문에 cutmix된 부분의 모델 예측과 유사도는 무의미하다. 
+                # 따라서 cutmix된 부분의 유사도는 0으로 만들어준다.
+                pred_corr_map_uw_wo_cutmixed: bool = (pred_corr_map_uw_cutmixed * ~cutmix_box * ignore_mask_cutmixed_arrange).bool()
+                # --------------------------------------------------------------------------------
+                
+                # ---------------------------- 모델이 예측한 신뢰도에서 threshold 걺 ----------------------------
+                thresh_controller.thresh_update(pred_uw.detach(), ignore_mask_cutmixed, update_g=True)
+                thresh_global = thresh_controller.get_thresh_global()
+                # 2번 수식 (M_i)
+                # conf_filter_uw : dynamic threshold를 통한 학습된 예측값 + 테스트 예측값 신뢰도에서 더 정확한 신뢰도만을 가져온것. 
+                conf_filter_uw: bool = ((pred_conf_uw_cutmixed >= thresh_global) & (ignore_mask_cutmixed != 255))
+                conf_filter_uw_wo_cutmix: bool = conf_filter_uw.clone()
+                conf_filter_uw_wo_cutmix_arrange: bool = rearrange(conf_filter_uw_wo_cutmix, 'n h w -> n 1 h w')
+                # ---------------------------------------------------------------------------------------------
+                
+                # ---------------- weak unlabel 중에 label과 공간적으로 가장 비슷하면서 모델 신뢰도가 높은 부분 ----------------
+                # 9번 수식에서 M_i * c_hat
+                # region_propagation - 더 정확한 경계를 얻기위함.
+                # conf_filter_uw_wo_cutmix_arrange: M_i
+                segments: bool = (pred_corr_map_uw_wo_cutmixed * conf_filter_uw_wo_cutmix_arrange).bool() # region-propa 재료
+                # -----------------------------------------------------------------------------------------------------------
+                
+                # ------------------ region propagation: 신뢰도가 낮은 예측 영역 (pred_mask_uw_cutmixed)을 주변의 지표를 활용해 refinement ------------------
+                """ label과 unlabel이 같은 클래스를 공간적으로 유사한 부분에서 공유하고 있으면 unique_cls에 그 클래스가 나타남."""
+                segment = segments.view(tcfg.batch_size, -1, tcfg.crop_size*tcfg.crop_size)
+                segment_ori = pred_corr_map_uw_wo_cutmixed.view(tcfg.batch_size, -1, tcfg.crop_size*tcfg.crop_size)
+                high_conf_ratio = torch.sum(segment, dim=2) / (torch.sum(segment_ori, dim=2) + 1e-7)
+                
+                valid_mask = (torch.sum(segment, dim=2) > 0) & (high_conf_ratio >= thresh_global)
+                valid_img_idx, valid_segment_idx = torch.where(valid_mask)
+                for img_idx, segment_idx in zip(valid_img_idx, valid_segment_idx):
+                    segment: bool = segments[img_idx, segment_idx]
+                    segment_ori: bool = pred_corr_map_uw_wo_cutmixed[img_idx, segment_idx]
+                    
+                    unique_cls, count = torch.unique(pred_mask_uw_cutmixed[img_idx][segment==1], return_counts=True)
+                    mask = torch.max(count) / torch.sum(count) > thresh_global
+                    if mask:
+                        top_class = unique_cls[count.argmax()] # 8번 수식 k*
+                        pred_mask_uw_cutmixed[img_idx][segment_ori==1] = top_class # 10번 수식, top class를 찾아 수정
+                        conf_filter_uw_wo_cutmix[img_idx] = conf_filter_uw_wo_cutmix[img_idx] | segment_ori # 수정
+                        
+                conf_filter_uw_wo_cutmix: bool = conf_filter_uw_wo_cutmix | conf_filter_uw
+                # -----------------------------------------------------------------------------------------------------------------------------------------
+                
+                
+                # region loss 계산
+                # ---------------------- label part ----------------------
+                label_loss      = loss_ohem(pred_lw, mask_lw, 
+                                            ignore_index=tcfg.LossConfig.ignore_index,
+                                            threshold=tcfg.LossConfig.ohem_threshold,
+                                            min_kept=tcfg.LossConfig.ohem_min_kept)
+                label_loss_corr = loss_ohem(pred_lw_corr, mask_lw, 
+                                            ignore_index=tcfg.LossConfig.ignore_index,
+                                            threshold=tcfg.LossConfig.ohem_threshold,
+                                            min_kept=tcfg.LossConfig.ohem_min_kept)
+                label_aux_loss  = loss_ohem(pred_mask_lw.float(), mask_lw, 
+                                            ignore_index=tcfg.LossConfig.ignore_index,
+                                            threshold=tcfg.LossConfig.ohem_threshold,
+                                            min_kept=tcfg.LossConfig.ohem_min_kept)
+                
+                label_dice_loss = loss_dice(pred_lw, mask_lw)
+                # ---------------------------------------------------------
+                
+                # ----------------------- unlabel part -----------------------
+                loss_us = loss_us_cr(pred=pred_us,
+                                    true=pred_mask_uw_cutmixed, 
+                                    confidence=conf_filter_uw_wo_cutmix, 
+                                    ignore_mask=ignore_mask_cutmixed)
+                
+                loss_us_corr = loss_us_cr(pred=pred_us_corr, 
+                                        true=pred_mask_uw_cutmixed, 
+                                        confidence=conf_filter_uw_wo_cutmix, 
+                                        ignore_mask=ignore_mask_cutmixed)
+                # 6번 수식
+                loss_uw_corr = loss_uw_cr(pred=pred_uw_corr, 
+                                        true=pred_mask_uw, 
+                                        confidence=pred_conf_uw,
+                                        threshold=thresh_global,
+                                        ignore_mask=ignore_mask)
+
+                loss_u_corr = 0.5 * (loss_us_corr + loss_uw_corr)
+                
+                # 3번 수식
+                loss_u_kl = loss_kl(pred_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+                loss_uw_fp = loss_uw_cr(pred=pred_uw_fp, 
+                                        true=pred_mask_uw, 
+                                        confidence=pred_conf_uw, 
+                                        threshold=thresh_global, 
+                                        ignore_mask=ignore_mask)
+                # ---------------------------------------------------------------------
+                
+                # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
+                # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
+                label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
+                unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
+                
+                # weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.lr_period, dtype=torch.float32))
+                # weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
+                # weight_label = 2 - 0.5 * weight_unlabel
+
+                # loss = weight_label * label_loss + weight_unlabel * unlabel_loss
+                loss = label_loss + unlabel_loss
+
+            # if not torch.isfinite(loss):
+            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}")
+            #     print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
+            #     print("loss_us", loss_us.item(), "loss_u_kl", loss_u_kl.item(), "loss_u_corr", loss_u_corr.item())
+                
+            #     raise RuntimeError("NaN in loss")
+            # # --- 1. Loss NaN 체크 (강제 종료 대신 continue) ---
+            # if not torch.isfinite(loss):
+            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}. Skipping this batch!")
+            #     # 디버깅용 출력
+            #     # print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
+            #     optimizer.zero_grad()
+            #     continue # 다음 배치로 넘어감!
             
-            conf_filter_u_w_without_cutmix = conf_filter_u_w_without_cutmix | conf_filter_u_w
-
-            # loss_x = criterion_l(pred_x, label_mask)
-            # loss_x_corr = criterion_l(pred_x_corr, label_mask)
-            label_loss = criterion_l(pred_x, label_mask)
-            label_loss_corr = criterion_l(pred_x_corr, label_mask)
-
-            # 1번 수식: Consistency Regularization
-            loss_u_s1 = criterion_u(pred_u_s1, mask_u_w_cutmixed1)
-            # 1번 수식에서의 M_i
-            loss_u_s1 = loss_u_s1 * conf_filter_u_w_without_cutmix
-            loss_u_s1 = torch.sum(loss_u_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
-
-            loss_u_corr_s1 = criterion_u(pred_u_s1_corr, mask_u_w_cutmixed1)
-            loss_u_corr_s1 = loss_u_corr_s1 * conf_filter_u_w_without_cutmix
-            loss_u_corr_s1 = torch.sum(loss_u_corr_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
-            loss_u_corr_s = loss_u_corr_s1
-
-            # 6번 수식
-            loss_u_corr_w = criterion_u(pred_u_w_corr, mask_u_w)
-            loss_u_corr_w = loss_u_corr_w * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
-            loss_u_corr_w = torch.sum(loss_u_corr_w) / torch.sum(ignore_mask != 255).item()
-            loss_u_corr = 0.5 * (loss_u_corr_s + loss_u_corr_w)
-            
-
-            softmax_pred_u_w = F.softmax(pred_u_w.detach(), dim=1)
-            logsoftmax_pred_u_s1 = F.log_softmax(pred_u_s1, dim=1)
-
-            # 3번 수식
-            loss_u_kl_sa2wa = criterion_kl(logsoftmax_pred_u_s1, softmax_pred_u_w)
-            # 3번 수식에서의 M_i 값
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa, dim=1) * conf_filter_u_w
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa) / torch.sum(ignore_mask_cutmixed1 != 255).item()
-            loss_u_kl = loss_u_kl_sa2wa
-
-            loss_u_w_fp = criterion_u(pred_u_w_fp, mask_u_w)
-            loss_u_w_fp = loss_u_w_fp * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
-            loss_u_w_fp = torch.sum(loss_u_w_fp) / torch.sum(ignore_mask != 255).item()
-
-            # total loss = 0.5 * L_s + 0.5 * L_u
-            # L_s = 0.5*loss_x + 0.5*loss_x_corr
-            # L_u = 0.5*loss_u_s1 + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_u_w_fp
-            # loss_u_w_fp: UniMatch에서 가져온 loss인 것 같음.
-            loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_u_s1 * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
-
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
 
+            # grad_has_nan = False
+            # for name, p in model.named_parameters():
+            #     if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
+            #         print(f"Grad NaN/Inf in {name} at epoch {epoch}, step {step}")
+            #         grad_has_nan = True
+            #         break # 하나라도 발견되면 어차피 스킵되니 더 찾을 필요 없음
+                
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            
+            total_aux_loss.update(label_aux_loss.detach())
             total_loss.update(loss.detach())
             total_label_loss.update(label_loss.detach())
             total_label_loss_corr.update(label_loss_corr.detach())
-            total_loss_s.update(loss_u_s1.detach())
-            total_loss_kl += loss_u_kl.item()
-            total_loss_w_fp.update(loss_u_w_fp.detach())
+            total_dice_loss.update(label_dice_loss.detach())
+            
+            total_loss_s.update(loss_us.detach())
+            total_loss_kl.update(loss_u_kl.detach())
+            total_loss_w_fp.update(loss_uw_fp.detach())
             total_loss_corr_u.update(loss_u_corr.detach())
-            total_mask_ratio += ((conf_u_w >= thresh_global) & (ignore_mask != 255)).sum().item() / \
+            total_mask_ratio += ((pred_conf_uw >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
-
+            
+            
             iters = epoch * len(unlabel_train_loader) + step
-            lr = tcfg.lr * (1 - iters / num_total_steps) ** 0.9
-            optimizer.param_groups[0]["lr"] = lr
-            optimizer.param_groups[1]["lr"] = lr * cfg['lr_multi']
-
+            # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
+            # # current_cycle_epoch = epoch % tcfg.lr_period
+            # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
+            # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
+            
+            # lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
+            # optimizer.param_groups[0]["lr"] = lr
+            # optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
+            lr = scheduler.get_last_lr()[0]
+            
             end_event.record()
             torch.cuda.synchronize()
             
             elapsed_time = start_event.elapsed_time(end_event) / 1000.0
             time_left = (num_total_steps - iters) * elapsed_time
-            # time_left = time.strftime("%H:%M:%S", time.gmtime(time_left))
             time_left = str(datetime.timedelta(seconds=int(time_left)))
             
             
-            if step % 50 == 0 and rank == 0:
-                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s | lr: {lr:5.4f}"
-                loss_info = f"total loss: {total_loss.compute():.3f}, loss x: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
+            if step % 10 == 0 and rank == 0:
+                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s"
+                loss_info = f"total loss: {total_loss.compute():.3f}, label loss: {total_label_loss.compute():.3f}, loss_corr_ce: {total_label_loss_corr.compute():.3f}, " \
                             f"loss s: {total_loss_s.compute():.3f}, loss w_fp: {total_loss_w_fp.compute():.3f}, loss_corr_u: {total_loss_corr_u.compute():.3f}, Mask: {total_mask_ratio/(step+1):.3f}"
                 print(hyperparam + '\n' + loss_info)
                 print('-'*100)
+                
+            del results
+    
+    
         # region step 끝
         
-        if tcfg.dataset == 'cityscapes':
-            eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'sliding_window'
-        else:
-            eval_mode = 'original'
+        # if tcfg.dataset == 'cityscapes':
+        #     eval_mode = 'center_crop' if epoch < tcfg.num_epochs - 20 else 'slviding_window'
+        # else:
+            # eval_mode = 'original'
             
         torch.cuda.empty_cache()
-        res_val = evaluate(rank, model, validation_loader, "original", cfg)
-        class_IOU = res_val['iou_class']
+        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=tcfg.eval_mode)
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/loss/total loss": total_loss.compute(), 
+                                          "Optimization/loss/aux loss": total_aux_loss.compute(),
+                                          "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss": total_label_loss.compute(), 
                                           "Optimization/loss/label loss corr": total_label_loss_corr.compute(), 
-                                          "Optimization/loss/unlabel strong loss1": total_loss_s.compute(), 
+                                          "Optimization/loss/label dice loss": total_dice_loss.compute(), 
+                                          "Optimization/loss/unlabel strong loss": total_loss_s.compute(), 
                                           "Optimization/loss/label weak fp loss": total_loss_w_fp.compute(), 
                                           "Optimization/loss/unlabel corr loss": total_loss_corr_u.compute(),
                                           "Optimization/learning_rate": lr,
@@ -393,9 +468,9 @@ def main():
                                           "Accuracy/eval/mIOU": res_val['mIOU'],
                                           })
         
-        img_us = img_u_s.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_us = pred_u_s1.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_us = pred_u_s1.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        img_us = img_us.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_us = pred_us.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_us = pred_us.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/unlabel strong image", 
                       image=img_us, 
                       pred=pred_mask_us,
@@ -404,13 +479,16 @@ def main():
                       image_path=l_image_path,
                       epoch=epoch)
 
-        img_l = label_image.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_l = pred_x.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_l = pred_x.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        gt = label_mask.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        img_lw = img_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_lw = pred_lw.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_l = pred_lw.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        if mask_lw.dim() == 4:
+            gt = mask_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
+        elif mask_lw.dim() == 3:
+            gt = mask_lw.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
-                      image=img_l, 
-                      pred=pred_mask_l,
+                      image=img_lw, 
+                      pred=pred_mask_lw,
                       conf=conf_l,
                       mask=gt,
                       image_path=u_image_path,
@@ -429,19 +507,23 @@ def main():
                       epoch=epoch)
 
 
-        if rank == 0:
-            logger.info(f'***** Evaluation {eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-            logger.info(f'***** ClassIOU ***** >>>> \n{class_IOU}\n')
-        else:
-            torch.distributed.barrier()
-
+        logger.info(f'***** Evaluation {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
+        summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in res_val['iou_class'].items())
+        print(f"[Class IoU]: {summary} \n")
+                
         if res_val['mIOU'] > previous_best and rank == 0:
-            model_save_dir = osp.join(tcfg.exp_dir, "models", tcfg.model_name)
-            
             if previous_best != 0:
-                os.remove(osp.join(model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
+                os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
-            torch.save(model.state_dict(), osp.join(model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+            torch.save({"epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict()}, 
+                       osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+            # torch.save({"epoch": epoch,
+            #             "model_state_dict": model.state_dict(),
+            #             'optimizer_state_dict': optimizer.state_dict()},
+            #            osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
         if rank != 0:
             torch.distributed.barrier()
@@ -449,8 +531,12 @@ def main():
 
 
 if __name__ == '__main__':
+    dcfg = DataConfig()
     tcfg = TrainConfig()
     mcfg = ModelConfig()
+    
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", local_rank)
 
     os.makedirs(osp.join(tcfg.exp_dir, "logs", tcfg.model_name), exist_ok=True)
     os.makedirs(osp.join(tcfg.exp_dir, "models", tcfg.model_name), exist_ok=True)
