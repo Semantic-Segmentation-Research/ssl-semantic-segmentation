@@ -75,10 +75,6 @@ class DeepLabV3Plus(nn.Module):
                                  dilations=mcfg.dilations,
                                  ratio=2))]))
         
-        # self.c1_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c2_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c3_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.num_classes, 1, bias=True)
-        # self.c4_cls = nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.num_classes, 1, bias=True)
         self.fuse = nn.Sequential(OrderedDict([
             # (112, 112, 114)
             ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
@@ -143,16 +139,12 @@ class DeepLabV3Plus(nn.Module):
             c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             
-            # c1_us1, c4_us1 = self.aspp_layer.c14(c1_us, c4_us)
-            # c1_us2, c2_us1 = self.aspp_layer.c12(c1_us, c2_us)
-            # c1_us = c1_us1 + c1_us2
-            
             feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
-            out_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            result_dict['out_us'] = out_us
+            pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['flow_mask_us'] = pred_mask
             
-            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=out_us, aug_type='strong')
-            result_dict['corr_out_us'] = result_corr["corr_dec_out"]
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=pred_mask, aug_type='strong')
+            result_dict['corr_mask_us'] = result_corr["corr_dec_out"]
             # ---------------------------------------------------------
             
             # ---------------- label+unlabel Weak Part ----------------
@@ -162,22 +154,18 @@ class DeepLabV3Plus(nn.Module):
                 )
             
             feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
-            outs            = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            pred_masks      = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
-            out, out_fp = outs.chunk(2)
-            result_c4corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
+            pred_mask, pred_mask_fp = pred_masks.chunk(2)
+            result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=pred_mask, aug_type='weak')
             
-            result_dict['binary_norm_corr_map'] = result_c4corr["binary_norm_corr_map"]
-            result_dict['corr_out'] = result_c4corr["corr_dec_out"]
-            result_dict['out_fp'] = out_fp
+            result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
+            result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
+            result_dict['mask_lw_uw_fp'] = pred_mask_fp
+            result_dict['mask_lw_uw'] = pred_mask
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            # output_mask = self.ml_aspp_layer(features=[c1_lw_uw[:self.tcfg.batch_size],
-            #                                        c2_lw_uw[:self.tcfg.batch_size],
-            #                                        c3_lw_uw[:self.tcfg.batch_size],
-            #                                        c4_lw_uw[:self.tcfg.batch_size]])
-            
             c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
             c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
             c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
@@ -192,18 +180,18 @@ class DeepLabV3Plus(nn.Module):
             c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             
-            c_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], axis=1)
-            c_lw = self.cls(c_lw)
-            output_mask = F.interpolate(c_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            feature = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
+            feature = self.cls(feature)
+            pred_mask = F.interpolate(feature, size=(image_height, image_width), mode='bilinear', align_corners=True)
             
-            result_dict['mask_lw'] = output_mask
+            result_dict['flow_mask_lw'] = pred_mask
             # ---------------------------------------------------------
             
-        elif mode == 'test':
+        elif mode == 'eval_train':
             c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
-            feature         = torch.cat([c1_us, c4_us], dim=1)
-            out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            feature       = torch.cat([c1_us, c4_us], dim=1)
+            pred_mask     = self.decoder_layer.weak(feature, size=(image_height, image_width))
             
-        result_dict['out'] = out
+            result_dict['eval_train'] = pred_mask
         
         return result_dict
