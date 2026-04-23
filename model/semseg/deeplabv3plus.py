@@ -13,7 +13,7 @@ from collections import OrderedDict
 
 # region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, tcfg, mcfg, pretrained_path):
+    def __init__(self, tcfg, mcfg, pretrained_path=''):
         super(DeepLabV3Plus, self).__init__()
         self.tcfg = tcfg
         self.mcfg = mcfg

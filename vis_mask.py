@@ -1,31 +1,21 @@
-import argparse
 import os
+import os.path as osp
 
+import matplotlib
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import yaml
-import matplotlib
-
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
-from einops import rearrange
 import numpy as np
 from PIL import Image
 
 from dataset.semi import SemiDataset
-from model.semseg.deeplabv3plus_vis import DeepLabV3Plus
-from util.dist_helper import setup_distributed
+from model.semseg.deeplabv3plus import DeepLabV3Plus
+# from model.semseg.deeplabv3plus_vis import DeepLabV3Plus
+from configuration import TestConfig, DataConfig, ModelConfig
 
-parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-parser.add_argument('--config', type=str, required=True)
-parser.add_argument('--labeled-id-path', type=str, required=True)
-parser.add_argument('--unlabeled-id-path', type=str, required=True)
-parser.add_argument('--save-path', type=str, required=True)
-parser.add_argument('--local_rank', default=0, type=int)
-parser.add_argument('--port', default=None, type=int)
-args = parser.parse_args()
 
 def color_map(dataset='pascal'):
     cmap = np.zeros((256, 3), dtype='uint8')
@@ -69,59 +59,61 @@ def color_map(dataset='pascal'):
     return cmap
 
 
-rank, word_size = setup_distributed(port=args.port)
+def main():
+    model_name = os.listdir(tcfg.model_save_dir)[-1]
+    model_path = osp.join(tcfg.model_save_dir, model_name)
+    
+    model = DeepLabV3Plus(tcfg, mcfg)
+    model.load_state_dict(torch.load(model_path))
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model.cuda()
 
-cfg = yaml.load(open('configs/pascal.yaml', "r"), Loader=yaml.Loader)
+    valset = SemiDataset(root=tcfg.data_root, 
+                         mode='val', 
+                         valid_path=tcfg.valid_path,
+                         size=tcfg.crop_size)
+    valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4, drop_last=False)
 
-model = DeepLabV3Plus(cfg)
-model.load_state_dict(torch.load('Your/checkpoint/path'))
-model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-model.cuda()
+    model.eval()
+    with torch.no_grad():
+        for img, mask, image_path in valloader:
+            img = img.cuda(non_blocking=True)
+            h, w = img.shape[2:]
+            image_name = osp.split(image_path)[-1]
+            
+            res = model(img, use_corr=True)
+            pred = res['eval_train']
+            pred_mask = pred.argmax(dim=1)
+            pred_conf = pred.softmax(dim=1).max(dim=1)[0]
+            
+            # take 0.95 as an example
+            pred_conf_fliter = (pred_conf <= 0.95)
+            mask_fliter = pred_mask.clone()
+            mask_fliter[pred_conf_fliter] = 255
+            for i in range(pred_mask.shape[0]):
+                file_name = ids[i].split(' ')[0].split('/')[1].split('.')[0]
+                if not os.path.exists('visual/{}'.format(file_name)):
+                    os.mkdir('visual/{}'.format(file_name))
+                print(file_name)
+                mask_pred_i = pred_mask[i]
+                mask_i = mask[i]
+                mask_filter_i = mask_fliter[i]
+                mask_i = Image.fromarray(mask_i.cpu().numpy().astype(np.uint8), mode='P')
+                mask_pred_i = Image.fromarray(mask_pred_i.cpu().numpy().astype(np.uint8), mode='P')
+                mask_filter_i = Image.fromarray(mask_filter_i.cpu().numpy().astype(np.uint8), mode='P')
+                platte = color_map()
+                mask_i.putpalette(platte)
+                mask_pred_i.putpalette(platte)
+                mask_filter_i.putpalette(platte)
+                mask_i.save('visual/{}/mask_gt.png'.format(file_name))
+                mask_pred_i.save('visual/{}/mask_pred.png'.format(file_name))
+                mask_filter_i.save('visual/{}/mask_filter.png'.format(file_name))
 
-local_rank = int(os.environ["LOCAL_RANK"])
-model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
-                                                  output_device=local_rank, find_unused_parameters=False)
 
-valset = SemiDataset(cfg['dataset'], cfg['data_root'], 'val')
-valsampler = torch.utils.data.distributed.DistributedSampler(valset, shuffle=False)
-valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4,
-                       drop_last=False, sampler=valsampler)
 
-model.eval()
-if local_rank == 0:
-    if not os.path.exists('visual'):
-        os.mkdir('visual')
-
-with torch.no_grad():
-    for img, mask, ids, img_ori in valloader:
-        dist.barrier()
-
-        img = img.cuda()
-        b, _, h, w = img.shape
-        res = model(img, use_corr=True)
-        pred = res['out']
-        pred_mask = pred.argmax(dim=1)
-        pred_conf = pred.softmax(dim=1).max(dim=1)[0]
-        # take 0.95 as an example
-        pred_conf_fliter = (pred_conf <= 0.95)
-        mask_fliter = pred_mask.clone()
-        mask_fliter[pred_conf_fliter] = 255
-        for i in range(pred_mask.shape[0]):
-            file_name = ids[i].split(' ')[0].split('/')[1].split('.')[0]
-            if not os.path.exists('visual/{}'.format(file_name)):
-                os.mkdir('visual/{}'.format(file_name))
-            print(file_name)
-            mask_pred_i = pred_mask[i]
-            mask_i = mask[i]
-            mask_filter_i = mask_fliter[i]
-            mask_i = Image.fromarray(mask_i.cpu().numpy().astype(np.uint8), mode='P')
-            mask_pred_i = Image.fromarray(mask_pred_i.cpu().numpy().astype(np.uint8), mode='P')
-            mask_filter_i = Image.fromarray(mask_filter_i.cpu().numpy().astype(np.uint8), mode='P')
-            platte = color_map()
-            mask_i.putpalette(platte)
-            mask_pred_i.putpalette(platte)
-            mask_filter_i.putpalette(platte)
-            mask_i.save('visual/{}/mask_gt.png'.format(file_name))
-            mask_pred_i.save('visual/{}/mask_pred.png'.format(file_name))
-            mask_filter_i.save('visual/{}/mask_filter.png'.format(file_name))
-
+if __name__ == "__main__":
+    dcfg = DataConfig()
+    tcfg = TestConfig()
+    mcfg = ModelConfig()
+    
+    main()

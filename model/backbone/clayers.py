@@ -5,22 +5,22 @@ import torch
 
 # region - Initial Convolution Layer
 class InitConv(nn.Module):
-    def __init__(self, mcfg):
+    def __init__(self, input_ch, mid_ch, out_ch):
         super(InitConv, self).__init__()
         
         self.init_conv = nn.Sequential(
-            nn.Conv2d(mcfg.input_channel, mcfg.nf, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(mcfg.nf),
+            nn.Conv2d(input_ch, mid_ch, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(mid_ch),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=3, stride=1, padding=1, groups=mcfg.nf, bias=False),
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(mcfg.nf),
+            nn.Conv2d(mid_ch, mid_ch, kernel_size=3, stride=1, padding=1, groups=mid_ch, bias=False),
+            nn.Conv2d(mid_ch, mid_ch, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(mid_ch),
             nn.ReLU(inplace=True),
             
-            nn.Conv2d(mcfg.nf, mcfg.nf, kernel_size=3, stride=1, padding=1, groups=mcfg.nf, bias=False),
-            nn.Conv2d(mcfg.nf, mcfg.nf*2, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(mcfg.nf*2),
+            nn.Conv2d(mid_ch, mid_ch, kernel_size=3, stride=1, padding=1, groups=mid_ch, bias=False),
+            nn.Conv2d(mid_ch, out_ch, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
         
