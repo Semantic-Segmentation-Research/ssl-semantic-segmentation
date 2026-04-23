@@ -20,15 +20,18 @@ class DeepLabV3Plus(nn.Module):
 
         if not osp.exists(pretrained_path): pretrained_path = False
             
-        if 'resnet' in mcfg.backbone:
-            backbone = resnet.__dict__[mcfg.backbone]
-            self.backbone = backbone(pretrained_path, mcfg=mcfg)
-        else:
-            assert mcfg.backbone == 'xception'
-            self.backbone = xception(True)
+        # if 'resnet' in mcfg.backbone:
+        #     backbone = resnet.__dict__[mcfg.backbone]
+        #     self.backbone = backbone(pretrained_path, mcfg=mcfg)
+        # else:
+        #     assert mcfg.backbone == 'xception'
+        #     self.backbone = xception(True)
+        
+        backbone = resnet.__dict__[mcfg.backbone]
+        self.backbone = backbone(pretrained_path, mcfg=mcfg)
 
         self.decoder_layer = nn.Sequential(OrderedDict([
-            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*13,
+            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
             ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
@@ -43,12 +46,7 @@ class DeepLabV3Plus(nn.Module):
                                                 output_size=self.tcfg.crop_size,
                                                 nclass=mcfg.num_classes))
         ]))
-        self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
-                                                    in_ch=mcfg.nf*mcfg.bttln_exp,
-                                                    in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
-                                                    ratio=2,
-                                                    dilations=mcfg.dilations,
-                                                    nclass=mcfg.num_classes)
+
         
         self.flow_layer = nn.Sequential(OrderedDict([
             ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
@@ -69,11 +67,8 @@ class DeepLabV3Plus(nn.Module):
             ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
                                  low_ch=36,
                                  dilations=mcfg.dilations,
-                                 ratio=6)),
-            ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
-                                 low_ch=36,
-                                 dilations=mcfg.dilations,
-                                 ratio=2))]))
+                                 ratio=6))
+            ]))
         
         self.fuse = nn.Sequential(OrderedDict([
             # (112, 112, 114)
