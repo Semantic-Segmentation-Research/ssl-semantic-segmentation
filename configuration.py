@@ -94,16 +94,19 @@ class TrainConfig:
         blur_prob: float = 0.5
         cutmix_prob: float = 0.5
         
-
+        
+        
 @dataclass
 class TestConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.3.2_LTU" 
+    model_name: str     = "v1.3.2_LTU"
 
-    crop_size: int      = 448
-    
+    valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
     data_root: str          = osp.join(BASE_DIR, 'data')
-    valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
+    pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
+    
+    crop_size: int      = 448
+    threshold: float    = 0.5

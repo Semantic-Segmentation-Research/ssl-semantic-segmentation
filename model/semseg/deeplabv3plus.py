@@ -184,9 +184,9 @@ class DeepLabV3Plus(nn.Module):
             
         elif mode == 'eval_train':
             c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
-            feature       = torch.cat([c1_us, c4_us], dim=1)
-            pred_mask     = self.decoder_layer.weak(feature, size=(image_height, image_width))
-            
-            result_dict['eval_train'] = pred_mask
+            feature         = torch.cat([c1_us, c4_us], dim=1)
+            out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+
+        result_dict['out'] = out
         
         return result_dict

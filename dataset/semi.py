@@ -52,6 +52,10 @@ class SemiDataset(Dataset):
         
         if self.mode == 'val':
             image_path = image_path.split(' ')[0]
+            
+            img = img.resize((self.size, self.size), resample=Image.BILINEAR)
+            mask = mask.resize((self.size, self.size), resample=Image.BILINEAR)
+            
             img, mask = trf.normalize(img, mask)
             
             return img, mask, image_path

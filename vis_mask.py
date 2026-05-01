@@ -63,8 +63,8 @@ def main():
     model_name = os.listdir(tcfg.model_save_dir)[-1]
     model_path = osp.join(tcfg.model_save_dir, model_name)
     
-    model = DeepLabV3Plus(tcfg, mcfg)
-    model.load_state_dict(torch.load(model_path))
+    model = DeepLabV3Plus(tcfg, mcfg, pretrained_path='')
+    model.load_state_dict(torch.load(model_path), strict=False)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
 
@@ -79,35 +79,38 @@ def main():
         for img, mask, image_path in valloader:
             img = img.cuda(non_blocking=True)
             h, w = img.shape[2:]
-            image_name = osp.split(image_path)[-1]
             
-            res = model(img, use_corr=True)
-            pred = res['eval_train']
+            res = model(img, mode='test')
+            pred = res['out']
             pred_mask = pred.argmax(dim=1)
             pred_conf = pred.softmax(dim=1).max(dim=1)[0]
             
             # take 0.95 as an example
-            pred_conf_fliter = (pred_conf <= 0.95)
+            pred_conf_fliter = (pred_conf <= tcfg.threshold)
             mask_fliter = pred_mask.clone()
             mask_fliter[pred_conf_fliter] = 255
+
             for i in range(pred_mask.shape[0]):
-                file_name = ids[i].split(' ')[0].split('/')[1].split('.')[0]
-                if not os.path.exists('visual/{}'.format(file_name)):
-                    os.mkdir('visual/{}'.format(file_name))
-                print(file_name)
-                mask_pred_i = pred_mask[i]
-                mask_i = mask[i]
-                mask_filter_i = mask_fliter[i]
-                mask_i = Image.fromarray(mask_i.cpu().numpy().astype(np.uint8), mode='P')
-                mask_pred_i = Image.fromarray(mask_pred_i.cpu().numpy().astype(np.uint8), mode='P')
-                mask_filter_i = Image.fromarray(mask_filter_i.cpu().numpy().astype(np.uint8), mode='P')
-                platte = color_map()
+                file_name = osp.split(image_path[i])[-1]
+                print(f"file_name: {file_name:<10}")
+
+                os.makedirs(osp.join(osp.dirname(__file__), 'visual', f'{file_name}'), exist_ok=True)
+
+                mask_pred_i     = pred_mask[i]
+                mask_i          = mask[i]
+                mask_filter_i   = mask_fliter[i]
+                mask_i          = Image.fromarray(mask_i.cpu().numpy().astype(np.uint8), mode='P')
+                mask_pred_i     = Image.fromarray(mask_pred_i.cpu().numpy().astype(np.uint8), mode='P')
+                mask_filter_i   = Image.fromarray(mask_filter_i.cpu().numpy().astype(np.uint8), mode='P')
+                
+                platte = color_map(dataset='cityscapes')
                 mask_i.putpalette(platte)
                 mask_pred_i.putpalette(platte)
                 mask_filter_i.putpalette(platte)
-                mask_i.save('visual/{}/mask_gt.png'.format(file_name))
-                mask_pred_i.save('visual/{}/mask_pred.png'.format(file_name))
-                mask_filter_i.save('visual/{}/mask_filter.png'.format(file_name))
+                
+                mask_i.save(osp.join(osp.dirname(__file__), 'visual', f'{file_name}', 'mask_gt.png'))
+                mask_pred_i.save(osp.join(osp.dirname(__file__), 'visual', f'{file_name}', 'mask_pred.png'))
+                mask_filter_i.save(osp.join(osp.dirname(__file__), 'visual', f'{file_name}', 'mask_filter.png'))
 
 
 
