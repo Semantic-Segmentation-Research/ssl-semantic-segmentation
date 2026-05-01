@@ -64,7 +64,8 @@ def main():
     model_path = osp.join(tcfg.model_save_dir, model_name)
     
     model = DeepLabV3Plus(tcfg, mcfg, pretrained_path='')
-    model.load_state_dict(torch.load(model_path), strict=False)
+    checkpoint = torch.load(model_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
 
@@ -80,7 +81,7 @@ def main():
             img = img.cuda(non_blocking=True)
             h, w = img.shape[2:]
             
-            res = model(img, mode='test')
+            res = model(img, mode='eval_train')
             pred = res['out']
             pred_mask = pred.argmax(dim=1)
             pred_conf = pred.softmax(dim=1).max(dim=1)[0]
