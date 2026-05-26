@@ -55,7 +55,7 @@ class SemiDataset(Dataset):
             gt_copy[mask == key] = value
         mask = Image.fromarray(gt_copy.astype(np.uint8))
         
-        if self.mode == 'val':
+        if self.mode == 'val' or self.mode == 'test':
             image_path = image_path.split(' ')[0]
             img, mask = trf.normalize(img, mask)
             

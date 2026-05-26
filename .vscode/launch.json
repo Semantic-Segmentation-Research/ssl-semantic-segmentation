@@ -11,6 +11,13 @@
             "request": "launch",
             "program": "${workspaceFolder}/ssl_main.py",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "inference",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/ssl_inference.py",
+            "console": "integratedTerminal"
         }
     ]
 }

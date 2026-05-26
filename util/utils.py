@@ -187,32 +187,6 @@ def intersectionAndUnion(output, target, K, ignore_index=255):
     return area_intersection, area_union, area_target
 
 
-def intersectionAndUnion_gpu(output, target, K, ignore_index=255):
-    # output, target shape: [B, H, W] 또는 [N]
-    assert output.shape == target.shape
-    
-    # 1차원으로 펼치기
-    output = output.view(-1)
-    target = target.view(-1)
-    
-    output = output.clone() # 원본 보존을 위해 클론
-    output[target == ignore_index] = ignore_index
-
-    # 3. Intersection 계산: output과 target이 같은 위치의 값들만 추출
-    intersection = output[output == target]
-
-    # 4. 빈도수 계산 (bincount)
-    # 이 때 ignore_index(255)는 minlength=K에 의해 자동으로 제외됩니다.
-    area_intersection = torch.bincount(intersection.long(), minlength=K)[:K]
-    area_output = torch.bincount(output[output < K].long(), minlength=K)[:K]
-    area_target = torch.bincount(target[target < K].long(), minlength=K)[:K]
-
-    # 5. Union 계산
-    area_union = area_output + area_target - area_intersection
-    
-    return area_intersection, area_union, area_target
-
-
 
 logs = set()
 
