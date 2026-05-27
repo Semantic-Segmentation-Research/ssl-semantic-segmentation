@@ -57,9 +57,9 @@ def get_evaluate_train(model, img_uw, img_us, ignore_mask, cutmix_box):
     
     with torch.no_grad():
         model.eval()
-        res_u_w_pred = model(img_uw[indices], mode='eval_train')
+        res_u_w_pred = model(img_uw[indices], mode='val')
         
-        logit_u_w = res_u_w_pred['eval_train'].detach()
+        logit_u_w = res_u_w_pred['out'].detach()
         prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
         conf_u_w, mask_u_w = prob_u_w.max(dim=1) # pseudo label
         

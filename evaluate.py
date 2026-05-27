@@ -49,9 +49,9 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
                     img = img[:, :, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
                     mask = mask[:, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
 
-                res = model(img, mode='eval_train')
-                pred = res['eval_train'].argmax(dim=1)
-                conf = res['eval_train'].softmax(dim=1).max(dim=1).values
+                res = model(img, mode='val')
+                pred = res['out'].argmax(dim=1)
+                conf = res['out'].softmax(dim=1).max(dim=1).values
                 
             intersection, union, target = \
                 intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), mcfg.num_classes, 255)

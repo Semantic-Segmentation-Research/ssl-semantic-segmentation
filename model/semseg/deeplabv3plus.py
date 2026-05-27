@@ -182,11 +182,11 @@ class DeepLabV3Plus(nn.Module):
             result_dict['flow_mask_lw'] = pred_mask
             # ---------------------------------------------------------
             
-        elif mode == 'eval_train':
+        elif mode == 'val':
             c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
             feature         = torch.cat([c1_us, c4_us], dim=1)
             out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
-        result_dict['out'] = out
+            result_dict['out'] = out
         
         return result_dict
