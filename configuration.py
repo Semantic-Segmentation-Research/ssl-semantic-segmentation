@@ -105,5 +105,4 @@ class TestConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     
     
-    crop_size: int      = 448
     threshold: float    = 0.5

@@ -18,6 +18,9 @@ from configuration import TestConfig, DataConfig, ModelConfig
 from util.utils import intersectionAndUnion, AverageMeter
 import pandas as pd
 import cityscapesLabels as labels
+from tqdm import tqdm
+
+
 
 
 def color_map():
@@ -72,22 +75,21 @@ def main():
     class_names = [l.name for l in labels.labels if l.trainId != 255]
     model.eval()
     with torch.no_grad():
-        for img, mask, image_path in valloader:
+        for img, mask, image_path in tqdm(valloader, desc='inference'):
             img = img.cuda(non_blocking=True)
             
             res = model(img, mode='test')
             pred = res['out']
             pred_mask = pred.argmax(dim=1)
-            pred_conf = pred.softmax(dim=1).max(dim=1)[0]
+            # pred_conf = pred.softmax(dim=1).max(dim=1)[0]
             
-            # take 0.95 as an example
-            pred_conf_fliter = (pred_conf <= tcfg.threshold)
-            mask_fliter = pred_mask.clone()
-            mask_fliter[pred_conf_fliter] = 255
+            # # take 0.95 as an example
+            # pred_conf_fliter = (pred_conf <= tcfg.threshold)
+            # mask_fliter = pred_mask.clone()
+            # mask_fliter[pred_conf_fliter] = 255
 
             for i in range(pred_mask.shape[0]):
                 file_name = osp.split(image_path[i])[-1][:-4]
-                print(f"file_name: {file_name:<10}")
 
                 rgb             = img[i].cpu().numpy().transpose(1, 2, 0)
                 rgb             = (rgb * 255).astype(np.uint8)
@@ -100,8 +102,11 @@ def main():
                 intersection, union, target = intersectionAndUnion(mask_pred_i.cpu().numpy(), mask_i.cpu().numpy(), mcfg.num_classes, 255)
                 
                 iou_class_p_img = intersection / (union + 1e-10)
-                row_data = {'image_name': file_name, 'miou_p_img': np.mean(iou_class_p_img) * 100}
-                for class_name, iou in zip(class_names, iou_class_p_img):
+
+                class_p_img = np.unique(mask_i[mask_i != 255])
+                nonzero_iou_p_img = iou_class_p_img[class_p_img]
+                row_data = {'image_name': file_name, 'miou_p_img': np.mean(nonzero_iou_p_img) * 100}
+                for class_name, iou in zip(class_names, nonzero_iou_p_img):
                     row_data[class_name] = iou
                 results.append(row_data)
                 
