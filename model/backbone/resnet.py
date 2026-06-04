@@ -80,18 +80,14 @@ class ResNet(nn.Module):
         self.base_width = mcfg.width_per_group
         
         
-        self.gamma_layer1 = clayers.LayerScale(input_ch=mcfg.input_channel, 
-                                               out_ch=mcfg.nf, 
-                                               gamma_channel=mcfg.nf)
-        self.gamma_layer2 = clayers.LayerScale(input_ch=mcfg.bttln_nf*mcfg.bttln_exp, 
-                                               out_ch=mcfg.bttln_nf*mcfg.bttln_exp, 
-                                               gamma_channel=mcfg.bttln_nf*mcfg.bttln_exp)
+        self.gamma_layer1 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*2)
+        self.gamma_layer2 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*mcfg.bttln_exp)
 
-        self.init_conv = clayers.InitConv(mcfg.input_channel, mcfg.nf)
-
-        self.ds_conv = nn.Conv2d(mcfg.nf, mcfg.bttln_nf, kernel_size=3, stride=2, padding=1, bias=False)
+        self.init_conv = clayers.InitConv(input_ch=mcfg.input_channel, mid_ch=mcfg.nf, out_ch=mcfg.nf*2)
         
-        self.layer1 = self._make_layer(block, mcfg.bttln_nf, layers[0])
+        self.ds_conv = nn.Conv2d(mcfg.nf*2, mcfg.nf*2, kernel_size=3, stride=2, padding=1, bias=False)
+        
+        self.layer1 = self._make_layer(block, mcfg.nf, layers[0])
         self.layer2 = self._make_layer(block, mcfg.nf*mcfg.enc_c2_ratio, layers[1], stride=2,
                                        dilate=mcfg.replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, mcfg.nf*mcfg.enc_c3_ratio, layers[2], stride=2,
@@ -110,6 +106,7 @@ class ResNet(nn.Module):
             for m in self.modules():
                 if isinstance(m, Bottleneck):
                     nn.init.constant_(m.bn3.weight, 0)
+
 
     # region make_layer
     def _make_layer(self, block, planes, num_block, stride=1, dilate=False, multi_grid=False):
@@ -143,16 +140,17 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
+
     def base_forward(self, x):
         x   = self.init_conv(x)
-        x_g = self.gamma_layer1(x)
-        x   = torch.add(x, x_g)
+        # x_g = self.gamma_layer1(x)
+        # x   = torch.add(x, x_g)
 
         x  = self.ds_conv(x)
         
         c1   = self.layer1(x)
-        c1_g = self.gamma_layer2(c1)
-        c1   = torch.add(c1, c1_g)
+        # c1_g = self.gamma_layer2(c1)
+        # c1   = torch.add(c1, c1_g)
 
         c2 = self.layer2(c1)
         c3 = self.layer3(c2)

@@ -7,3 +7,5 @@ gtFine_trainvaltest.zip
 leftImg8bit_trainvaltest.zip
 experiments
 data
+*.png
+*.csv

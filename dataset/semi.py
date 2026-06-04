@@ -1,21 +1,15 @@
-from copy import deepcopy
 import math
 import numpy as np
-import os
 import os.path as osp
 import random
 
-import kornia.augmentation as K
-
-from util import utils
-# from dataset.transform import *
 import dataset.transform as trf
 
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-import torch.nn as nn
+
 
 class SemiDataset(Dataset):
     def __init__(self, root, mode, valid_path=None, size=None, id_path=None, nsample=None):
@@ -43,6 +37,7 @@ class SemiDataset(Dataset):
             with open(valid_path, 'r') as f:
                 self.ids = f.read().splitlines()
 
+
     def __getitem__(self, item):
         image_path = self.ids[item]
         
@@ -57,6 +52,10 @@ class SemiDataset(Dataset):
         
         if self.mode == 'val':
             image_path = image_path.split(' ')[0]
+            
+            img = img.resize((self.size, self.size), resample=Image.BILINEAR)
+            mask = mask.resize((self.size, self.size), resample=Image.BILINEAR)
+            
             img, mask = trf.normalize(img, mask)
             
             return img, mask, image_path

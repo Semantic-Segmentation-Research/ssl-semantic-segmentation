@@ -13,25 +13,28 @@ from collections import OrderedDict
 
 # region - DeepLabV3+
 class DeepLabV3Plus(nn.Module):
-    def __init__(self, tcfg, mcfg, pretrained_path):
+    def __init__(self, tcfg, mcfg, pretrained_path=''):
         super(DeepLabV3Plus, self).__init__()
         self.tcfg = tcfg
         self.mcfg = mcfg
 
         if not osp.exists(pretrained_path): pretrained_path = False
             
-        if 'resnet' in mcfg.backbone:
-            backbone = resnet.__dict__[mcfg.backbone]
-            self.backbone = backbone(pretrained_path, mcfg=mcfg)
-        else:
-            assert mcfg.backbone == 'xception'
-            self.backbone = xception(True)
+        # if 'resnet' in mcfg.backbone:
+        #     backbone = resnet.__dict__[mcfg.backbone]
+        #     self.backbone = backbone(pretrained_path, mcfg=mcfg)
+        # else:
+        #     assert mcfg.backbone == 'xception'
+        #     self.backbone = xception(True)
+        
+        backbone = resnet.__dict__[mcfg.backbone]
+        self.backbone = backbone(pretrained_path, mcfg=mcfg)
 
         self.decoder_layer = nn.Sequential(OrderedDict([
-            ('strong', context.SegHead(in_ch= mcfg.bttln_exp * (mcfg.bttln_nf + mcfg.nf*mcfg.enc_c2_ratio + mcfg.nf*mcfg.enc_c3_ratio + mcfg.nf*mcfg.enc_c4_ratio),
+            ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            ('weak', context.SegHead(in_ch= 36 + mcfg.bttln_nf * mcfg.bttln_exp,
+            ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))
@@ -43,16 +46,11 @@ class DeepLabV3Plus(nn.Module):
                                                 output_size=self.tcfg.crop_size,
                                                 nclass=mcfg.num_classes))
         ]))
-        # self.ml_aspp_layer = context.MultiLevelASPP(out_size=tcfg.crop_size,
-        #                                             in_ch=mcfg.nf*mcfg.bttln_exp,
-        #                                             in_mul=[mcfg.enc_c1_ratio, mcfg.enc_c2_ratio, mcfg.enc_c3_ratio, mcfg.enc_c4_ratio],
-        #                                             ratio=2,
-        #                                             dilations=mcfg.dilations,
-        #                                             nclass=mcfg.num_classes)
+
         
         self.flow_layer = nn.Sequential(OrderedDict([
-            ("c1", context.FlowAtt(channel=mcfg.bttln_nf*mcfg.bttln_exp,
-                                  reduc_ch=mcfg.bttln_nf,
+            ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
+                                  reduc_ch=mcfg.bttln_exp,
                                   exp_ratio=4)),
             ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
                                   reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
@@ -69,15 +67,12 @@ class DeepLabV3Plus(nn.Module):
             ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
                                  low_ch=36,
                                  dilations=mcfg.dilations,
-                                 ratio=4))]))
-            # ("c12", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
-            #                      low_ch=36,
-            #                      dilations=mcfg.dilations,
-            #                      ratio=2))]))
+                                 ratio=6))
+            ]))
         
         self.fuse = nn.Sequential(OrderedDict([
             # (112, 112, 114)
-            ("c1", nn.Sequential(nn.Conv2d(mcfg.bttln_nf*mcfg.bttln_exp, 64, 3, padding=1, bias=True),
+            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
                                  nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
@@ -138,13 +133,13 @@ class DeepLabV3Plus(nn.Module):
             c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-                     
-            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
-            out_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            result_dict['out_us'] = out_us
             
-            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=out_us, aug_type='strong')
-            result_dict['corr_out_us'] = result_corr["corr_dec_out"]
+            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
+            pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['flow_mask_us'] = pred_mask
+            
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=pred_mask, aug_type='strong')
+            result_dict['corr_mask_us'] = result_corr["corr_dec_out"]
             # ---------------------------------------------------------
             
             # ---------------- label+unlabel Weak Part ----------------
@@ -154,14 +149,15 @@ class DeepLabV3Plus(nn.Module):
                 )
             
             feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
-            outs            = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            pred_masks      = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
-            out, out_fp = outs.chunk(2)
-            result_c4corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=out, aug_type='weak')
+            pred_mask, pred_mask_fp = pred_masks.chunk(2)
+            result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=pred_mask, aug_type='weak')
             
-            result_dict['binary_norm_corr_map'] = result_c4corr["binary_norm_corr_map"]
-            result_dict['corr_out'] = result_c4corr["corr_dec_out"]
-            result_dict['out_fp'] = out_fp
+            result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
+            result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
+            result_dict['mask_lw_uw_fp'] = pred_mask_fp
+            result_dict['mask_lw_uw'] = pred_mask
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
@@ -179,19 +175,18 @@ class DeepLabV3Plus(nn.Module):
             c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             
-            c_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], axis=1)
-            c_lw = self.cls(c_lw)
-            # 디코더에서 low-level feature -> high-level feature로
-            output_mask = F.interpolate(c_lw, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            feature = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
+            feature = self.cls(feature)
+            pred_mask = F.interpolate(feature, size=(image_height, image_width), mode='bilinear', align_corners=True)
             
-            result_dict['mask_lw'] = output_mask
+            result_dict['flow_mask_lw'] = pred_mask
             # ---------------------------------------------------------
             
-        elif mode == 'test':
+        elif mode == 'val':
             c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
             feature         = torch.cat([c1_us, c4_us], dim=1)
             out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
-            
-        result_dict['out'] = out
+
+            result_dict['out'] = out
         
         return result_dict

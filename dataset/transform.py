@@ -7,17 +7,17 @@ import torch
 from torchvision import transforms
 import torch.nn.functional as F
 
-palette = [128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153, 153, 153, 153, 250, 170, 30,
-           220, 220, 0, 107, 142, 35, 152, 251, 152, 70, 130, 180, 220, 20, 60, 255, 0, 0, 0, 0, 142, 0, 0, 70,
-           0, 60, 100, 0, 80, 100, 0, 0, 230, 119, 11, 32]
+# palette = [128, 64, 128, 244, 35, 232, 70, 70, 70, 102, 102, 156, 190, 153, 153, 153, 153, 153, 250, 170, 30,
+#            220, 220, 0, 107, 142, 35, 152, 251, 152, 70, 130, 180, 220, 20, 60, 255, 0, 0, 0, 0, 142, 0, 0, 70,
+#            0, 60, 100, 0, 80, 100, 0, 0, 230, 119, 11, 32]
 
-zero_pad = 256 * 3 - len(palette)
+# zero_pad = 256 * 3 - len(palette)
 
-def colorize_mask(mask):
-    new_mask = mask.convert('P')
-    new_mask.putpalette(palette)
+# def colorize_mask(mask):
+#     new_mask = mask.convert('P')
+#     new_mask.putpalette(palette)
 
-    return new_mask
+#     return new_mask
 
 
 def crop(img, mask, size, ignore_value=255):
@@ -118,40 +118,6 @@ def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3,
 
     mask[y:y + cutmix_h, x:x + cutmix_w] = 1 # mask의 y축값 ~ y+ bbox height까지, x축값 ~ x+ bbox width까지를 1로 채움
 
-    return mask
-
-
-def obtain_cutmix_box_gpu(batch_size, img_h, img_w, device, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
-# 1. 전체 배치에 대한 CutMix 적용 여부 결정 (한 번에 계산)
-    apply_cutmix = torch.rand(batch_size, device=device) < p  # [B]
-    
-    # 기본 마스크 생성 (B, 1, H, W)
-    mask = torch.zeros((batch_size, 1, img_h, img_w), device=device)
-    
-    # 2. 적용해야 할 인덱스들에 대해서만 루프 수행
-    indices = torch.where(apply_cutmix)[0]
-    
-    for i in indices:
-        # 면적(size)과 비율(ratio)을 torch.rand로 생성
-        # size = (min + (max-min) * rand) * total_area
-        target_size = (size_min + (size_max - size_min) * torch.rand(1, device=device)) * img_h * img_w
-        
-        while True:
-            # ratio_1 ~ ratio_2 사이의 랜덤 값
-            ratio = ratio_1 + (ratio_2 - ratio_1) * torch.rand(1, device=device)
-            
-            cutmix_w = torch.sqrt(target_size / ratio).int()
-            cutmix_h = torch.sqrt(target_size * ratio).int()
-            
-            if cutmix_w < img_w and cutmix_h < img_h:
-                # 좌표를 torch.randint로 생성
-                x = torch.randint(0, img_w - cutmix_w, (1,), device=device)
-                y = torch.randint(0, img_h - cutmix_h, (1,), device=device)
-                break
-        
-        # 3. GPU 메모리 내에서 직접 할당
-        mask[i, 0, y : y + cutmix_h, x : x + cutmix_w] = 1.0
-        
     return mask
 
 

@@ -22,9 +22,9 @@ class ModelConfig:
     norm_layer: str     = "BatchNorm2d"
     
     input_channel : int = 3
-    nf: int       = 32
-    bttln_nf: int  = 48
-    bttln_exp: int = 2
+    nf: int       = 48
+    bttln_nf: int  = 96
+    bttln_exp: int = 3
     groups: int     = 1
     width_per_group:int = 64
     num_blocks: list = field(default_factory=lambda: [3, 4, 6, 3])
@@ -43,16 +43,19 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.4.0_LTU"
+    model_name: str     = "v1.4.1_LTU" 
+    # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
     model_save_dir: str     = osp.join(exp_dir, "models", model_name)
     data_root: str          = osp.join(BASE_DIR, 'data')
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
+    valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
+    
     
     batch_size: int     = 8
-    lr: float           = 5e-4 # 5e-3
-    # lr: float           = 2e-4 # 5e-3
+    # lr: float           = 5e-4 # 5e-3
+    lr: float           = 2e-4 # 5e-3
     decay_power: float   = 0.9
     lr_multi: float     = 1.0
     num_epochs: int     = 800
@@ -90,3 +93,20 @@ class TrainConfig:
         
         blur_prob: float = 0.5
         cutmix_prob: float = 0.5
+        
+        
+        
+@dataclass
+class TestConfig:
+    dataset: str        = "cityscapes"
+    model_name: str     = "v1.3.2_LTU"
+
+    valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
+    exp_dir: str            = osp.join(BASE_DIR, "experiments")
+    model_save_dir: str     = osp.join(exp_dir, "models", model_name)
+    data_root: str          = osp.join(BASE_DIR, 'data')
+    pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
+    
+    
+    crop_size: int      = 448
+    threshold: float    = 0.5

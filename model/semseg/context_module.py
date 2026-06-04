@@ -6,6 +6,16 @@ from timm.layers import DropPath
 from collections import OrderedDict
 
 # region - ASPPConv
+# def ASPPConv(in_channels, out_channels, atrous_rate):
+#     block = nn.Sequential(
+#         nn.Conv2d(in_channels, out_channels, 3, 
+#                   padding=atrous_rate,
+#                   dilation=atrous_rate, 
+#                   bias=False),
+#         nn.BatchNorm2d(out_channels),
+#         nn.ReLU(True)
+#         )
+#     return block
 def ASPPConv(in_channels, out_channels, atrous_rate):
     block = nn.Sequential(
         # depthwise conv: groups=in_channels keeps channels separate
@@ -147,9 +157,14 @@ class CrossCovarianceAtt(nn.Module):
         self.kv_conv = nn.Conv2d(reduc_out_ch, mid_ch * 2, kernel_size=1, stride=1, padding=0, bias=True)
         self.q_conv = nn.Conv2d(reduc_out_ch, mid_ch, kernel_size=1, stride=1, padding=0, bias=True)
         self.dwconv = nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1, groups=mid_ch)
-        self.proj   = nn.Conv2d(mid_ch, nclass, kernel_size=3, padding=1)
-        
+        # self.proj   = nn.Conv2d(mid_ch, nclass, kernel_size=3, padding=1)
+        self.proj = nn.Sequential(
+            nn.Conv2d(mid_ch, mid_ch*2, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_ch*2, nclass, kernel_size=3, padding=1, bias=True),
+        )
         # self.temperature = nn.Parameter(torch.ones(1, mid_ch, 1))
+        self.relu = nn.ReLU(inplace=True)
         
     # Encoder output & Decoder output
     def forward(self, enc_out, dec_out, aug_type='weak'):
@@ -175,10 +190,11 @@ class CrossCovarianceAtt(nn.Module):
         attn = F.softmax(attn.float(), dim=-1).type_as(attn)
         xca = torch.bmm(attn, v)
 
-        xca = F.softmax(xca, dim=1)
+        # xca = F.softmax(xca, dim=1)
 
         if aug_type =='weak':
-            result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca, enc_height, enc_width, dec_height, dec_width)
+            xca_ = F.softmax(xca, dim=1)
+            result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca_, enc_height, enc_width, dec_height, dec_width)
         
         xca_conf_reshape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
         xca_conf_reshape = self.proj(xca_conf_reshape)
@@ -223,16 +239,24 @@ class FlowAtt(nn.Module):
             ('reduction', nn.Sequential(
                 nn.Conv2d(channel, reduc_ch, kernel_size=1, stride=1, padding=0, bias=True),
                 nn.BatchNorm2d(reduc_ch),
-                nn.ReLU6(inplace=True))
+                nn.Hardswish(inplace=True))
              ),
-            ('dw3x3', nn.Conv2d(reduc_ch, reduc_ch, kernel_size=3, stride=1, groups=reduc_ch, padding=1, bias=True)),
-            ('dw3x3_bn', nn.BatchNorm2d(reduc_ch)),
-            ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
-            ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
+            # ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
+            # ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
+            ('asy_f1', nn.Sequential(
+                nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(1, 3), stride=1, padding=(0, 1), bias=True),
+                nn.BatchNorm2d(reduc_ch*exp_ratio),
+                nn.Hardswish(inplace=True),
+            )),
+            ('asy_f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(3, 1), stride=1, padding=(1, 0), bias=True)),
             ('g', nn.Conv2d(reduc_ch*exp_ratio, channel, kernel_size=1, stride=1, padding=0, bias=True)),
-            ('g_bn', nn.BatchNorm2d(reduc_ch*exp_ratio)),
-            ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
-            ('relu', nn.ReLU6(inplace=True)),
+            # ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
+            ('dwconv2', nn.Sequential(
+                nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False),
+                nn.BatchNorm2d(channel),
+                nn.Hardswish(inplace=True)
+            )),
+            ('hswish', nn.Hardswish(inplace=True)),
             ('drop_path', DropPath(drop_path) if drop_path > 0. else nn.Identity())
         ]))
         
@@ -249,7 +273,7 @@ class FlowAtt(nn.Module):
             ("proj", nn.Sequential(
                 nn.Conv2d(channel, channel, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.BatchNorm2d(channel),
-                nn.ReLU(inplace=True)
+                nn.Hardswish(inplace=True)
                 ))
         ]))
         # self.temperature = nn.Parameter(1e-6 * torch.ones(1, channel, 1))
@@ -260,9 +284,9 @@ class FlowAtt(nn.Module):
         input = feat
         
         x = self.star_layer.reduction(feat)
-        x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
-        x = self.star_layer.relu(x1) * x2
-        # x = self.star_layer.relu(x1) + x2
+        # x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
+        x1, x2 = self.star_layer.asy_f1(x), self.star_layer.asy_f2(x)
+        x = self.star_layer.hswish(x1) * x2
         x = self.star_layer.dwconv2(self.star_layer.g(x))
         
         x = input + self.star_layer.drop_path(x)
@@ -330,41 +354,6 @@ class ASPP(nn.Module):
         return feat1, feat2
 
 
-# region - MultiLevelASPP
-class MultiLevelASPP(nn.Module):
-    def __init__(self, out_size, in_ch, in_mul, ratio, dilations=None, nclass=19):
-        super(MultiLevelASPP, self).__init__()
-        self.out_size = out_size
-        self.nclass = nclass
-        
-        r1, r2, r3, r4 = in_mul
-        self.aspp1 = ASPPModule(in_ch=in_ch * r1, out_ch=in_ch//ratio, atrous_rates=dilations)
-        self.aspp2 = ASPPModule(in_ch=in_ch * r2, out_ch=in_ch//ratio, atrous_rates=dilations)
-        self.aspp3 = ASPPModule(in_ch=in_ch * r3, out_ch=in_ch//ratio, atrous_rates=dilations)
-        self.aspp4 = ASPPModule(in_ch=in_ch * r4, out_ch=in_ch//ratio, atrous_rates=dilations)
-
-        mid_ch = in_ch//ratio //2
-        self.fuse = nn.Sequential(
-            nn.Conv2d(in_ch//ratio * 4, mid_ch, kernel_size=1, bias=False), # 채널 압축
-            nn.BatchNorm2d(mid_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_ch, nclass, kernel_size=1, bias=True) # 최종 출력 (BN 제거)
-        )
-        
-        
-    def forward(self, features):
-        c1, c2, c3, c4 = features
-        
-        m1 = F.interpolate(self.aspp1(c1), size=self.out_size, mode="bilinear", align_corners=True)
-        m2 = F.interpolate(self.aspp2(c2), size=self.out_size, mode="bilinear", align_corners=True)
-        m3 = F.interpolate(self.aspp3(c3), size=self.out_size, mode="bilinear", align_corners=True)
-        m4 = F.interpolate(self.aspp4(c4), size=self.out_size, mode="bilinear", align_corners=True)
-
-        # m = (m1 + m2 + m3 + m4)
-        m = torch.cat([m1, m2, m3, m4], dim=1)
-        out = self.fuse(m)
-        
-        return out
     
     
 # region - SegHead
