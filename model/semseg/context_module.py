@@ -239,16 +239,23 @@ class FlowAtt(nn.Module):
             ('reduction', nn.Sequential(
                 nn.Conv2d(channel, reduc_ch, kernel_size=1, stride=1, padding=0, bias=True),
                 nn.BatchNorm2d(reduc_ch),
-                nn.ReLU6(inplace=True))
+                nn.Hardswish(inplace=True))
              ),
-            ('dw3x3', nn.Conv2d(reduc_ch, reduc_ch, kernel_size=3, stride=1, groups=reduc_ch, padding=1, bias=True)),
-            # ('dw3x3_bn', nn.BatchNorm2d(reduc_ch)),
-            ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
-            ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=False)),
+            # ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
+            # ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
+            ('asy_f1', nn.Sequential(
+                nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(1, 3), stride=1, padding=(0, 1), bias=True),
+                nn.BatchNorm2d(reduc_ch*exp_ratio),
+                nn.Hardswish(inplace=True),
+            )),
+            ('asy_f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(3, 1), stride=1, padding=(1, 0), bias=True)),
             ('g', nn.Conv2d(reduc_ch*exp_ratio, channel, kernel_size=1, stride=1, padding=0, bias=True)),
-            # ('g_bn', nn.BatchNorm2d(reduc_ch*exp_ratio)),
-            ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
-            # ('relu', nn.ReLU6(inplace=True)),
+            # ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
+            ('dwconv2', nn.Sequential(
+                nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False),
+                nn.BatchNorm2d(channel),
+                nn.Hardswish(inplace=True)
+            )),
             ('hswish', nn.Hardswish(inplace=True)),
             ('drop_path', DropPath(drop_path) if drop_path > 0. else nn.Identity())
         ]))
@@ -266,7 +273,7 @@ class FlowAtt(nn.Module):
             ("proj", nn.Sequential(
                 nn.Conv2d(channel, channel, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.BatchNorm2d(channel),
-                nn.ReLU(inplace=True)
+                nn.Hardswish(inplace=True)
                 ))
         ]))
         # self.temperature = nn.Parameter(1e-6 * torch.ones(1, channel, 1))
@@ -277,10 +284,9 @@ class FlowAtt(nn.Module):
         input = feat
         
         x = self.star_layer.reduction(feat)
-        x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
+        # x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
+        x1, x2 = self.star_layer.asy_f1(x), self.star_layer.asy_f2(x)
         x = self.star_layer.hswish(x1) * x2
-        # x = self.star_layer.relu(x1) * x2
-        # x = self.star_layer.relu(x1) + x2
         x = self.star_layer.dwconv2(self.star_layer.g(x))
         
         x = input + self.star_layer.drop_path(x)
