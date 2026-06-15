@@ -39,7 +39,7 @@ parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirnam
 parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
-parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch_v2'), type=str)
+parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch'), type=str)
 
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
@@ -127,13 +127,14 @@ def main():
     thresh_controller = ThreshController(nclass=cfg['nclass'], momentum=0.999, thresh_init=cfg['thresh_init'])
 
     start_epoch = 0
-    latest_model = os.listdir(args.save_path)[-1]
-    checkpoint = torch.load(osp.join(args.save_path, latest_model), map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    start_epoch = checkpoint['epoch'] + 1
-    
-    logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
+    if len(os.listdir(args.save_path)) > 0:
+        latest_model = os.listdir(args.save_path)[-1]
+        checkpoint = torch.load(osp.join(args.save_path, latest_model), map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        
+        logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
     
     
     for epoch in range(start_epoch, cfg['epochs']):

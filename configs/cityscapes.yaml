@@ -7,7 +7,7 @@ data_root: /home/dev/data
 
 # arguments for training
 # epochs: 240
-epochs: 480
+epochs: 800
 # batch_size: 2
 batch_size: 8
 lr: 0.005  # 4GPUs
