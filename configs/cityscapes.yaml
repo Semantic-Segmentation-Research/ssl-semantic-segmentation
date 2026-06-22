@@ -2,12 +2,13 @@
 dataset: cityscapes
 nclass: 19
 # crop_size: 801
-crop_size: 352
+# crop_size: 352
+crop_size: 336
 data_root: /home/dev/data
 
 # arguments for training
-# epochs: 240
-epochs: 800
+epochs: 240
+# epochs: 800
 # batch_size: 2
 batch_size: 8
 lr: 0.005  # 4GPUs

@@ -1,3 +1,4 @@
+import time
 import argparse
 import os
 import numpy as np
@@ -20,22 +21,41 @@ def evaluate(model, rank, loader, mode, cfg):
     union_meter = AverageMeter()
 
     with torch.no_grad():
-        for img, mask, ids, img_ori in loader:
+        for img, mask, _, _ in loader:
+            start_time = time.time()
+            
             img = img.cuda()
             b, _, h, w = img.shape
             if mode == 'sliding_window':
                 grid = cfg['crop_size']
-                final = torch.zeros(b, 19, h, w).cuda()
-                row = 0
-                while row < h:
-                    col = 0
-                    while col < w:
-                        res = model(img[:, :, row: min(h, row + grid), col: min(w, col + grid)])
-                        pred = res['out']
-                        final[:, :, row: min(h, row + grid), col: min(w, col + grid)] += pred.softmax(dim=1)
-                        col += int(grid * 2 / 3)
-                    row += int(grid * 2 / 3)
-
+                final = torch.zeros(b, 19, h, w, device='cuda')
+                stride = int(grid * 2 / 3)
+                # row = 0
+                # while row < h:
+                #     col = 0
+                #     while col < w:
+                #         res = model(img[:, :, row: min(h, row + grid), col: min(w, col + grid)])
+                #         pred = res['out']
+                #         final[:, :, row: min(h, row + grid), col: min(w, col + grid)] += pred.softmax(dim=1)
+                #         col += int(grid * 2 / 3)
+                #     row += int(grid * 2 / 3)
+                with torch.no_grad(), torch.autocast(device_type='cuda'):
+                    row = 0
+                    while row < h:
+                        col = 0
+                        while col < w:
+                            r1 = min(h, row + grid)
+                            c1 = min(w, col + grid)
+                            
+                            res = model(img[:, :, row:r1, col:c1])
+                            # float32로 캐스팅 후 누적 (정확도 보존을 위해)
+                            pred = res['out'].float().softmax(dim=1) 
+                            
+                            final[:, :, row:r1, col:c1] += pred
+                            
+                            col += stride
+                        row += stride
+                        
                 pred = final.argmax(dim=1)
 
             else:
@@ -48,6 +68,8 @@ def evaluate(model, rank, loader, mode, cfg):
                 res = model(img)
                 pred = res['out'].argmax(dim=1)
 
+            elapsed_time = time.time() - start_time
+            
             intersection, union, target = \
                 intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), cfg['nclass'], 255)
 
@@ -66,6 +88,7 @@ def evaluate(model, rank, loader, mode, cfg):
     mIOU = np.mean(iou_class) * 100.0
     return_dict['iou_class'] = iou_class
     return_dict['mIOU'] = mIOU
+    return_dict['elapsed_time'] = elapsed_time
 
     return return_dict
 
