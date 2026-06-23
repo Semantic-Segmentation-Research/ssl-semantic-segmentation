@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.4.2_LTU" 
+    model_name: str     = "v1.4.3_LTU" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -54,14 +54,13 @@ class TrainConfig:
     
     
     batch_size: int     = 8
-    # lr: float           = 5e-4 # 5e-3
-    lr: float           = 3e-4 # 5e-3
+    lr: float           = 5e-4 # 5e-3
     decay_power: float   = 0.9
     lr_multi: float     = 1.0
-    num_epochs: int     = 800
+    num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 448
+    crop_size: int      = 352
     local_rank: int     = 0
     port: int           = 0
     

@@ -151,16 +151,16 @@ def main():
     num_total_steps = steps_per_epoch * tcfg.num_epochs
     
     # region optimizer
-    # optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
-    #                  {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
-    #                   'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
+    optimizer = SGD([{'params': model.backbone.parameters(), 'lr': tcfg.lr},
+                     {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
+                      'lr': tcfg.lr * tcfg.lr_multi}], lr=tcfg.lr, momentum=0.9, weight_decay=1e-4)
     
-    optimizer = Adam(model.parameters(), lr=tcfg.lr)
+    # optimizer = Adam(model.parameters(), lr=tcfg.lr)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
-    lr_cd = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * tcfg.lr_period,
-                                                      t_mul=1.,
-                                                      m_mul=0.5)
-    scheduler = LambdaLR(optimizer, lr_lambda=lr_cd)
+    # lr_cd = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * tcfg.lr_period,
+    #                                                   t_mul=1.,
+    #                                                   m_mul=0.5)
+    # scheduler = LambdaLR(optimizer, lr_lambda=lr_cd)
     
     thresh_controller = ThreshController(nclass=mcfg.num_classes, momentum=0.999, thresh_init=tcfg.thresh_init)
 
@@ -185,7 +185,7 @@ def main():
         checkpoint = torch.load(osp.join(tcfg.model_save_dir, latest_model), map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict']) 
+        # scheduler.load_state_dict(checkpoint['scheduler_state_dict']) 
         start_epoch = checkpoint['epoch'] + 1
         
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
@@ -350,37 +350,14 @@ def main():
                 # loss = weight_label * label_loss + weight_unlabel * unlabel_loss
                 loss = sum_label_loss + sum_unlabel_loss
 
-            # if not torch.isfinite(loss):
-            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}")
-            #     print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
-            #     print("loss_us", loss_us.item(), "loss_u_kl", loss_u_kl.item(), "loss_u_corr", loss_u_corr.item())
-                
-            #     raise RuntimeError("NaN in loss")
-            # # --- 1. Loss NaN 체크 (강제 종료 대신 continue) ---
-            # if not torch.isfinite(loss):
-            #     print(f"NaN/Inf detected in loss at epoch {epoch}, step {step}. Skipping this batch!")
-            #     # 디버깅용 출력
-            #     # print("label_loss", label_loss.item(), "unlabel_loss", unlabel_loss.item())
-            #     optimizer.zero_grad()
-            #     continue # 다음 배치로 넘어감!
-            
             optimizer.zero_grad()
-            # loss.backward()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
 
-            # grad_has_nan = False
-            # for name, p in model.named_parameters():
-            #     if p.grad is not None and (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
-            #         print(f"Grad NaN/Inf in {name} at epoch {epoch}, step {step}")
-            #         grad_has_nan = True
-            #         break # 하나라도 발견되면 어차피 스킵되니 더 찾을 필요 없음
-                
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            # optimizer.step()
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
+            # scheduler.step()
             
             total_aux_loss.update(label_aux_loss.detach())
             total_loss.update(loss.detach())
@@ -402,10 +379,10 @@ def main():
             # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
             # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
             
-            # lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
-            # optimizer.param_groups[0]["lr"] = lr
-            # optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
-            lr = scheduler.get_last_lr()[0]
+            lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
+            optimizer.param_groups[0]["lr"] = lr
+            optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
+            # lr = scheduler.get_last_lr()[0]
             
             end_event.record()
             torch.cuda.synchronize()
@@ -491,15 +468,15 @@ def main():
             if previous_best != 0:
                 os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
-            torch.save({"epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict()}, 
-                       osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
             # torch.save({"epoch": epoch,
             #             "model_state_dict": model.state_dict(),
             #             'optimizer_state_dict': optimizer.state_dict()},
+            #             "scheduler_state_dict": scheduler.state_dict()}, 
             #            osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+            torch.save({"epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict()},
+                       osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
         if rank != 0:
             torch.distributed.barrier()
