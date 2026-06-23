@@ -162,7 +162,7 @@ def main():
     if tcfg.scheduler == "cosineDecay":
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=24, T_mult=2)
         lr_cd = utils.get_tf_cosine_decay_restarts_lambda(first_decay_steps=steps_per_epoch * tcfg.lr_period,
-                                                        t_mul=1.,
+                                                        t_mul=2.,
                                                         m_mul=tcfg.decay_power)
         scheduler = LambdaLR(optimizer, lr_lambda=lr_cd)
     
