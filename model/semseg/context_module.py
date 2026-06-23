@@ -170,8 +170,6 @@ class FlowAtt(nn.Module):
                 nn.BatchNorm2d(reduc_ch),
                 nn.Hardswish(inplace=True))
              ),
-            # ('f1', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
-            # ('f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=1, stride=1, padding=0, bias=True)),
             ('asy_f1', nn.Sequential(
                 nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(1, 3), stride=1, padding=(0, 1), bias=True),
                 nn.BatchNorm2d(reduc_ch*exp_ratio),
@@ -179,7 +177,7 @@ class FlowAtt(nn.Module):
             )),
             ('asy_f2', nn.Conv2d(reduc_ch, reduc_ch*exp_ratio, kernel_size=(3, 1), stride=1, padding=(1, 0), bias=True)),
             ('g', nn.Conv2d(reduc_ch*exp_ratio, channel, kernel_size=1, stride=1, padding=0, bias=True)),
-            # ('dwconv2', nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False)),
+
             ('dwconv2', nn.Sequential(
                 nn.Conv2d(channel, channel, kernel_size=1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(channel),
@@ -213,9 +211,8 @@ class FlowAtt(nn.Module):
         input = feat
         
         x = self.star_layer.reduction(feat)
-        # x1, x2 = self.star_layer.f1(x), self.star_layer.f2(x)
         x1, x2 = self.star_layer.asy_f1(x), self.star_layer.asy_f2(x)
-        x = self.star_layer.hswish(x1) * x2
+        x = self.star_layer.hswish(x1) * x2 #TODO: x1 * self.star_layer.hswish(x2) 
         x = self.star_layer.dwconv2(self.star_layer.g(x))
         
         x = input + self.star_layer.drop_path(x)
