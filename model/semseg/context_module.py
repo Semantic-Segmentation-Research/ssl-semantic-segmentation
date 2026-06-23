@@ -9,26 +9,25 @@ import math
 
 # region - ASPPConv
 def ASPPConv(in_channels, out_channels, atrous_rate):
-    # block = nn.Sequential(
-    #     # depthwise conv: groups=in_channels keeps channels separate
-    #     nn.Conv2d(in_channels,
-    #               in_channels,
-    #               kernel_size=3,
-    #               padding=atrous_rate,
-    #               dilation=atrous_rate,
-    #               groups=in_channels,
-    #               bias=False),
-    #     nn.BatchNorm2d(in_channels),
-    #     nn.ReLU6(True),
-    #     # pointwise conv to mix channels and adjust to desired out_channels
-    #     nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-    #     nn.BatchNorm2d(out_channels),
-    #     nn.ReLU6(True),
-    # )
-    block = nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, padding=atrous_rate,
-                                    dilation=atrous_rate, bias=False),
-                          nn.BatchNorm2d(out_channels),
-                          nn.ReLU(True))
+    block = nn.Sequential(
+        nn.Conv2d(in_channels,
+                  in_channels,
+                  kernel_size=3,
+                  padding=atrous_rate,
+                  dilation=atrous_rate,
+                  groups=in_channels,
+                  bias=False),
+        nn.BatchNorm2d(in_channels),
+        nn.ReLU(True),
+        # pointwise conv to mix channels and adjust to desired out_channels
+        nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+        nn.BatchNorm2d(out_channels),
+        nn.ReLU(True),
+    )
+    # block = nn.Sequential(nn.Conv2d(in_channels, out_channels, 3, padding=atrous_rate,
+    #                                 dilation=atrous_rate, bias=False),
+    #                       nn.BatchNorm2d(out_channels),
+    #                       nn.ReLU(True))
     return block
 
 # region - ASPPPooling

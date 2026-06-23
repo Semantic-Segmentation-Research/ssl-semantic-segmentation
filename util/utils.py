@@ -90,16 +90,7 @@ labels = [
 # =================================================================
 
 def compute_flops(tcfg, model, logger):
-    class WrapperModel(nn.Module):
-        def __init__(self, basemodel):
-            super().__init__()
-            self.model = basemodel
-
-        def forward(self, x):
-            return self.model(x, mode='val')
-
-    wrapper_model = WrapperModel(model).cuda()
-    wrapper_model.eval()
+    model.eval()
 
     if isinstance(tcfg.crop_size, int):
         h, w = tcfg.crop_size, tcfg.crop_size

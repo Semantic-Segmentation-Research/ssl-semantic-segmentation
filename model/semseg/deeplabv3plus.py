@@ -26,8 +26,7 @@ class DeepLabV3Plus(nn.Module):
             ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            # ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *4,
-            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *2,
+            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *4,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))
@@ -225,8 +224,8 @@ class DeepLabV3Plus(nn.Module):
             
             # ---------------- label+unlabel Weak Part ----------------
             c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
-                torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
-                torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
+                torch.cat((c1_lw_uw, F.dropout2d(c1_lw_uw, 0.5, training=self.training))),
+                torch.cat((c4_lw_uw, F.dropout2d(c4_lw_uw, 0.5, training=self.training)))
                 )
 
             feature     = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
