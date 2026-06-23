@@ -183,10 +183,6 @@ class DeepLabV3Plus(nn.Module):
             c4_lw, c4_uw = c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[self.tcfg.batch_size:]
             
             # ---------------- Unlabel Strong Part ----------------
-            # c1_us = self.flow_layer.c1(c1_lw, c1_us)
-            # c2_us = self.flow_layer.c2(c2_lw, c2_us)
-            # c3_us = self.flow_layer.c3(c3_lw, c3_us)
-            # c4_us = self.flow_layer.c4(c4_lw, c4_us)
             c1_u = self.flow_layer.c1(torch.cat([c1_us, c1_uw], dim=0))
             c2_u = self.flow_layer.c2(torch.cat([c2_us, c2_uw], dim=0))
             c3_u = self.flow_layer.c3(torch.cat([c3_us, c3_uw], dim=0))
@@ -197,11 +193,11 @@ class DeepLabV3Plus(nn.Module):
             c3_us, c3_uw = c3_u.chunk(2, dim=0)
             c4_us, c4_uw = c4_u.chunk(2, dim=0)
             
-            c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             
-            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
+            feature = torch.cat([c1_us, up_c2_us, up_c3_us, up_c4_us], dim=1)
             flow_logit_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
             result_dict['flow_logit_us'] = flow_logit_us
             
@@ -214,16 +210,16 @@ class DeepLabV3Plus(nn.Module):
             c3_uw = self.flow_layer.c3(c3_uw)
             c4_uw = self.flow_layer.c4(c4_uw)
             
-            c2_uw = F.interpolate(c2_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
-            c3_uw = F.interpolate(c3_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
-            c4_uw = F.interpolate(c4_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
+            up_c2_uw = F.interpolate(c2_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
+            up_c3_uw = F.interpolate(c3_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
+            up_c4_uw = F.interpolate(c4_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
 
-            feature_uw = torch.cat([c1_uw, c2_uw, c3_uw, c4_uw], dim=1)
+            feature_uw = torch.cat([c1_uw, up_c2_uw, up_c3_uw, up_c4_uw], dim=1)
             flow_logit_uw = self.decoder_layer.strong(feature_uw, size=(image_height, image_width))
             result_dict['flow_logit_uw'] = flow_logit_uw
             # ---------------------------------------------------------
             
-            result_dict['flow_logit_uws'] = flow_logit_uw + flow_logit_us
+            # result_dict['flow_logit_uws'] = flow_logit_uw + flow_logit_us
             
             # ---------------- label+unlabel Weak Part ----------------
             c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
@@ -244,48 +240,89 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            c1_lw = self.fuse.c1(c1_lw)
-            c2_lw = self.fuse.c2(c2_lw)
-            c3_lw = self.fuse.c3(c3_lw)
-            c4_lw = self.fuse.c4(c4_lw)
+            # c1_us_lw = self.flow_layer.c1(torch.cat([c1_us, c1_lw], dim=0))
+            # c2_us_lw = self.flow_layer.c2(torch.cat([c2_us, c2_lw], dim=0))
+            # c3_us_lw = self.flow_layer.c3(torch.cat([c3_us, c3_lw], dim=0))
+            # c4_us_lw = self.flow_layer.c4(torch.cat([c4_us, c4_lw], dim=0))
             
-            c2_lw = F.interpolate(c2_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
-            c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
-            c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            fuse_c1_lw = self.fuse.c1(c1_lw)
+            fuse_c2_lw = self.fuse.c2(c2_lw)
+            fuse_c3_lw = self.fuse.c3(c3_lw)
+            fuse_c4_lw = self.fuse.c4(c4_lw)
+            # fuse_c1_us_lw = self.fuse.c1(c1_us_lw)
+            # fuse_c2_us_lw = self.fuse.c2(c2_us_lw)
+            # fuse_c3_us_lw = self.fuse.c3(c3_us_lw)
+            # fuse_c4_us_lw = self.fuse.c4(c4_us_lw)
             
-            feature_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
-            # logit = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
-            logit = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
-
+            up_c2_lw = F.interpolate(fuse_c2_lw, size=fuse_c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up_c3_lw = F.interpolate(fuse_c3_lw, size=fuse_c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up_c4_lw = F.interpolate(fuse_c4_lw, size=fuse_c1_lw.shape[-2:], mode='bilinear', align_corners=True)
+            feature_lw = torch.cat([fuse_c1_lw, up_c2_lw, up_c3_lw, up_c4_lw], dim=1)
+            logit_c1 = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
+            
+            up2_c1_lw = F.interpolate(fuse_c1_lw, size=fuse_c2_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up2_c3_lw = F.interpolate(fuse_c3_lw, size=fuse_c2_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up2_c4_lw = F.interpolate(fuse_c4_lw, size=fuse_c2_lw.shape[-2:], mode='bilinear', align_corners=True)
+            
+            feature_lw = torch.cat([up2_c1_lw, fuse_c2_lw, up2_c3_lw, up2_c4_lw], dim=1)
+            logit_c2 = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
+            
+            up3_c1_lw = F.interpolate(fuse_c1_lw, size=fuse_c3_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up3_c2_lw = F.interpolate(fuse_c2_lw, size=fuse_c3_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up3_c4_lw = F.interpolate(fuse_c4_lw, size=fuse_c3_lw.shape[-2:], mode='bilinear', align_corners=True)
+            feature_lw = torch.cat([up3_c1_lw, up3_c2_lw, fuse_c3_lw, up3_c4_lw], dim=1)
+            logit_c3 = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
+            
+            up4_c1_lw = F.interpolate(fuse_c1_lw, size=fuse_c4_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up4_c2_lw = F.interpolate(fuse_c2_lw, size=fuse_c4_lw.shape[-2:], mode='bilinear', align_corners=True)
+            up4_c3_lw = F.interpolate(fuse_c3_lw, size=fuse_c4_lw.shape[-2:], mode='bilinear', align_corners=True)
+            feature_lw = torch.cat([up4_c1_lw, up4_c2_lw, up4_c3_lw, fuse_c4_lw], dim=1)
+            logit_c4 = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
+            
+            logit = logit_c1 + logit_c2 + logit_c3 * logit_c4
             result_dict['flow_logit_lw'] = logit
+            
             # ---------------------------------------------------------
             
         elif mode == 'val':
-            c1_, c4_  = self.aspp_layer.c14(c1, c4)
-            feature_ = torch.cat([c1_, c4_], dim=1)
+            # c1_, c4_  = self.aspp_layer.c14(c1, c4)
+            # feature_ = torch.cat([c1_, c4_], dim=1)
             # out      = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
             # result_dict['out'] = out
-        
-            # c1_val = self.flow_layer.c1(c1)
-            # c2_val = self.flow_layer.c2(c2)
-            # c3_val = self.flow_layer.c3(c3)
-            # c4_val = self.flow_layer.c4(c4)
             
-            c1_val = self.fuse.c1(c1)
-            c2_val = self.fuse.c2(c2)
-            c3_val = self.fuse.c3(c3)
-            c4_val = self.fuse.c4(c4)
+            fuse_c1_val = self.fuse.c1(c1)
+            fuse_c2_val = self.fuse.c2(c2)
+            fuse_c3_val = self.fuse.c3(c3)
+            fuse_c4_val = self.fuse.c4(c4)
             
-            c2_val = F.interpolate(c2_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c3_val = F.interpolate(c3_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c4_val = F.interpolate(c4_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c2_val = F.interpolate(fuse_c2_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c3_val = F.interpolate(fuse_c3_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            up_c4_val = F.interpolate(fuse_c4_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             
-            feature = torch.cat([c1_val, c2_val, c3_val, c4_val], dim=1)
-            # out = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            feautre_val = feature_ + feature
-            out = self.decoder_layer.weak(feautre_val, size=(image_height, image_width))
+            feature = torch.cat([fuse_c1_val, up_c2_val, up_c3_val, up_c4_val], dim=1)
+            out_c1 = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
+            up2_c1_val = F.interpolate(fuse_c1_val, size=fuse_c2_val.shape[-2:], mode='bilinear', align_corners=True)
+            up2_c3_val = F.interpolate(fuse_c3_val, size=fuse_c2_val.shape[-2:], mode='bilinear', align_corners=True)
+            up2_c4_val = F.interpolate(fuse_c4_val, size=fuse_c2_val.shape[-2:], mode='bilinear', align_corners=True)
+            
+            feature = torch.cat([up2_c1_val, fuse_c2_val, up2_c3_val, up2_c4_val], dim=1)
+            out_c2 = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            
+            up3_c1_val = F.interpolate(fuse_c1_val, size=fuse_c3_val.shape[-2:], mode='bilinear', align_corners=True)
+            up3_c2_val = F.interpolate(fuse_c2_val, size=fuse_c3_val.shape[-2:], mode='bilinear', align_corners=True)
+            up3_c4_val = F.interpolate(fuse_c4_val, size=fuse_c3_val.shape[-2:], mode='bilinear', align_corners=True)
+            feature = torch.cat([up3_c1_val, up3_c2_val, fuse_c3_val, up3_c4_val], dim=1)
+            out_c3 = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            
+            up4_c1_val = F.interpolate(fuse_c1_val, size=fuse_c4_val.shape[-2:], mode='bilinear', align_corners=True)
+            up4_c2_val = F.interpolate(fuse_c2_val, size=fuse_c4_val.shape[-2:], mode='bilinear', align_corners=True)
+            up4_c3_val = F.interpolate(fuse_c3_val, size=fuse_c4_val.shape[-2:], mode='bilinear', align_corners=True)
+            feature = torch.cat([up4_c1_val, up4_c2_val, up4_c3_val, fuse_c4_val], dim=1)
+            out_c4 = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            
+            out = out_c1 + out_c2 + out_c3 * out_c4
             result_dict['out'] = out
         
         return result_dict

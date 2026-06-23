@@ -39,7 +39,8 @@ def evaluate(tcfg, mcfg, model, loader, mode):
                 grid = tcfg.crop_size
                 final = torch.zeros(b, 19, h, w).cuda()
                 stride = int(grid * 2 / 3)
-                with torch.no_grad(), torch.autocast(device_type='cuda'):
+                # with torch.no_grad(), torch.autocast(device_type='cuda'):
+                with torch.no_grad():
                     row = 0
                     while row < h:
                         col = 0

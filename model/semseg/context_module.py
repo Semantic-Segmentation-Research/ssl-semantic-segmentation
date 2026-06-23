@@ -355,7 +355,6 @@ class FlowAtt(nn.Module):
         return feat_att + self.star_layer.drop_path(x)
     
     
-# region - _FlowAtt
 # class _FlowAtt(nn.Module):
 #     """
 #     label의 정보를 unlabel에게 전달
