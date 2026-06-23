@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from dataclasses import field
 import os.path as osp
 
-BASE_DIR = '/workspace'
+BASE_DIR = '/home/dev'
 
 # region - Data
 @dataclass

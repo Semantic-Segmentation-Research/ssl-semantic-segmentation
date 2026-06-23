@@ -246,7 +246,7 @@ def main():
     
     start_epoch = 0
     if tcfg.resume:
-        latest_model = os.listdir(tcfg.model_save_dir)[-1]
+        latest_model = sorted(os.listdir(tcfg.model_save_dir))[-1]
         checkpoint = torch.load(osp.join(tcfg.model_save_dir, latest_model), map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -254,7 +254,11 @@ def main():
             scheduler.load_state_dict(checkpoint['scheduler_state_dict']) 
             
         start_epoch = checkpoint['epoch'] + 1
-        
+
+        previous_best = checkpoint.get('previous_best', 0.0)
+        if 'thresh_state' in checkpoint:
+            thresh_controller.thresh_global = torch.tensor(checkpoint['thresh_state']).cuda()
+
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
         
     _print_ = utils.PrintFormat(tcfg, unlabel_train_loader)
@@ -265,7 +269,9 @@ def main():
     accum_counter = 0
     step_in_epoch = 0
     
-    
+    MEM_WARMUP = 10   # cudnn 워밍업 + 최소 1 accumulation cycle 확보
+    MEM_WINDOW = 20   # 이 구간의 max를 최종 peak로 채택
+
     # region - Train
     # scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
     scaler = torch.amp.GradScaler('cuda')
@@ -493,6 +499,17 @@ def main():
 
             scaler.scale(full_loss / tcfg.accumulation_steps).backward()
             # (full_loss / tcfg.accumulation_steps).backward()
+            if epoch == start_epoch:
+                if step == MEM_WARMUP:
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                if step == MEM_WARMUP + MEM_WINDOW:
+                    torch.cuda.synchronize()
+                    peak_alloc = torch.cuda.max_memory_allocated() / 1e9
+                    peak_reserved = torch.cuda.max_memory_reserved() / 1e9
+                    logger.info(f'Peak VRAM (steady-state, step {MEM_WARMUP}~{MEM_WARMUP+MEM_WINDOW}) - '
+                                f'Allocated: {peak_alloc:.3f} GB | Reserved: {peak_reserved:.3f} GB')
+
             accum_counter += 1
 
             iters = epoch * len(unlabel_train_loader) + step
