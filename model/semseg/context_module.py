@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from timm.layers import DropPath
 from collections import OrderedDict
+import math
+
 
 # region - ASPPConv
 def ASPPConv(in_channels, out_channels, atrous_rate):
@@ -116,10 +118,15 @@ class CrossCovarianceAtt(nn.Module):
         q = F.normalize(q, p=2, dim=1)
         k = F.normalize(k, p=2, dim=1)
         
+        # q = q / F.normalize(q, p=2, dim=1).clamp_min(1e-6)
+        # k = k / F.normalize(k, p=2, dim=1).clamp_min(1e-6)
+        
         attn = torch.bmm(q, k.transpose(1, 2))
         # attn /= self.temperature
         # attn = F.softmax(attn, dim=-1)
         attn = F.softmax(attn.float(), dim=-1).type_as(attn)
+        # attn = attn / math.sqrt(q.shape[-1])
+        # attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         xca = torch.bmm(attn, v)
 
         # xca = F.softmax(xca, dim=1)
@@ -197,7 +204,10 @@ class PrototypeAttention(nn.Module):
             nn.Hardswish(inplace=True)
         )
         self.temperature = nn.Parameter(torch.tensor(0.05))
- 
+        self.gamma = nn.Parameter(1e-6 * torch.ones((1, in_ch, 1, 1)), requires_grad=True)
+        
+        
+
     def forward(self, feat, prototypes):
         """
         feat       : [B, C,  H, W]
@@ -205,29 +215,35 @@ class PrototypeAttention(nn.Module):
         returns    : [B, C,  H, W]  (feat + attention-refined residual)
         """
         b, _, h, w = feat.shape
- 
+
         x = self.reduction(feat)                          # [B, C', H, W]
- 
+
         # Q: 픽셀별 피처  [B, H*W, C']
         q = self.q_conv(x).flatten(2).transpose(1, 2)
- 
+
         # K, V: 프로토타입을 배치 크기만큼 복사  [B, 19, C']
         proto = prototypes.unsqueeze(0).expand(b, -1, -1)
         k = self.k_proj(proto)
         v = self.v_proj(proto)
- 
+
+        # q_norm = q / F.normalize(q, p=2, dim=-1).clamp_min(1e-6)
+        # k_norm = k / F.normalize(k, p=2, dim=-1).clamp_min(1e-6)
         q_norm = F.normalize(q, p=2, dim=-1)
         k_norm = F.normalize(k, p=2, dim=-1)
- 
+
         # [B, H*W, C'] × [B, C', 19] → [B, H*W, 19]
-        attn = torch.bmm(q_norm, k_norm.transpose(1, 2)) / self.temperature
+        # temperature = self.temperature.clamp_min(1e-3)
+        # attn = torch.bmm(q_norm, k_norm.transpose(1, 2)) / temperature
+        attn = torch.bmm(q_norm, k_norm.transpose(1, 2))
+        attn = attn / math.sqrt(q_norm.shape[-1])
+        attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6) # 방어코드
         attn = F.softmax(attn, dim=-1)
- 
+
         # [B, H*W, 19] × [B, 19, C'] → [B, H*W, C'] → [B, C', H, W]
         out = torch.bmm(attn, v).transpose(1, 2).view(b, -1, h, w)
         out = self.proj(out)                              # [B, C, H, W]
- 
-        return feat + out
+
+        return feat + self.gamma * out
 
 
 
@@ -264,7 +280,7 @@ class FlowAtt(nn.Module):
  
         # ── 메모리 뱅크: [num_classes, reduc_ch] ──────────────────────────────
         # 역전파로 갱신되지 않으며, update_prototypes()에서 EMA 방식으로만 갱신됨
-        self.register_buffer("class_prototypes", torch.zeros(num_classes, reduc_ch))
+        self.register_buffer("class_prototypes", torch.ones(num_classes, reduc_ch))
  
         # ── PrototypeAttention (Cross-Attention w/ Memory Bank) ───────────────
         self.xca = PrototypeAttention(in_ch=channel, out_ch=reduc_ch, num_classes=num_classes)

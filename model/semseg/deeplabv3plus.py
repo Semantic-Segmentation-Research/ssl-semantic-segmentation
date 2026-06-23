@@ -130,7 +130,7 @@ class DeepLabV3Plus(nn.Module):
         Args:
             c1~c4  : backbone 출력 피처 (Labeled 이미지 기준)
             label  : GT 세그멘테이션 레이블 [B, H, W]
-            momentum: EMA 갱신 계수 (기본 0.99)
+            momentum: EMA 갱신 계수 (기본 0.5)
         """
         scales = [
             (c1, self.flow_layer.c1),
