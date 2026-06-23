@@ -116,7 +116,7 @@ class DeepLabV3Plus(nn.Module):
     # region update proto
     # 정답지(Label)를 보고 메모리 뱅크 업데이트
     @torch.no_grad()
-    def update_prototypes(self, c1, c2, c3, c4, label, momentum=0.99):
+    def update_prototypes(self, c1, c2, c3, c4, label, momentum=0.6):
         """
         Labeled 배치의 backbone 피처(c1~c4)와 GT label을 이용해
         각 FlowAtt 인스턴스의 class_prototypes를 EMA 방식으로 갱신.
@@ -130,7 +130,7 @@ class DeepLabV3Plus(nn.Module):
         Args:
             c1~c4  : backbone 출력 피처 (Labeled 이미지 기준)
             label  : GT 세그멘테이션 레이블 [B, H, W]
-            momentum: EMA 갱신 계수 (기본 0.5)
+            momentum: EMA 갱신 계수 (기본 0.6)
         """
         scales = [
             (c1, self.flow_layer.c1),
