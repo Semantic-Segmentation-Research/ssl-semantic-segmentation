@@ -55,12 +55,12 @@ class DeepLabV3Plus(nn.Module):
                                 #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
                                   reduc_ch=mcfg.nf*mcfg.enc_c3_ratio,
                                   exp_ratio=4,
-                                  method='sum')),
+                                  method='mul')),
             ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                 #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                   reduc_ch=mcfg.nf*mcfg.enc_c4_ratio,
                                   exp_ratio=4,
-                                  method='sum')
+                                  method='mul')
              )]))
         
         # region aspp
@@ -202,11 +202,11 @@ class DeepLabV3Plus(nn.Module):
             c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             
             feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
-            pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            result_dict['flow_mask_us'] = pred_mask
+            flow_logit_us = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['flow_logit_us'] = flow_logit_us
             
-            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=pred_mask, aug_type='strong')
-            result_dict['corr_mask_us'] = result_corr["corr_dec_out"]
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=flow_logit_us, aug_type='strong')
+            result_dict['corr_logit_us'] = result_corr["corr_dec_out"]
             
             # ---------------- Unlabel Weak Part ----------------
             c2_uw = F.interpolate(c2_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
@@ -214,8 +214,8 @@ class DeepLabV3Plus(nn.Module):
             c4_uw = F.interpolate(c4_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
 
             feature_uw = torch.cat([c1_uw, c2_uw, c3_uw, c4_uw], dim=1)
-            pred_mask_uw_flow = self.decoder_layer.strong(feature_uw, size=(image_height, image_width))
-            result_dict['flow_mask_uw'] = pred_mask_uw_flow
+            flow_logit_uw = self.decoder_layer.strong(feature_uw, size=(image_height, image_width))
+            result_dict['flow_logit_uw'] = flow_logit_uw
             # ---------------------------------------------------------
             
             
@@ -225,21 +225,17 @@ class DeepLabV3Plus(nn.Module):
                 torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
                 torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
                 )
-            # c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
-            #     torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw)), axis=1),
-            #     c4_lw_uw + nn.Dropout2d(0.5)(c4_lw_uw)
-            #     )
-            
-            feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
-            pred_masks      = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
-            pred_mask, pred_mask_fp = pred_masks.chunk(2)
-            result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=pred_mask, aug_type='weak')
+            feature     = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
+            logits_fp   = self.decoder_layer.weak(feature, size=(image_height, image_width))
+
+            logit_uw_lw, logit_uw_lw_fp = logits_fp.chunk(2)
+            result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=logit_uw_lw, aug_type='weak')
             
             result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
-            result_dict['corr_mask_lw_uw']      = result_corr["corr_dec_out"]
-            result_dict['mask_lw_uw_fp']        = pred_mask_fp
-            result_dict['mask_lw_uw']           = pred_mask
+            result_dict['corr_logit_lw_uw']     = result_corr["corr_dec_out"]
+            result_dict['logit_lw_uw_fp']       = logit_uw_lw_fp
+            result_dict['logit_lw_uw']          = logit_uw_lw
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
@@ -253,12 +249,12 @@ class DeepLabV3Plus(nn.Module):
             c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             
             feature_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
-            # pred_mask = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
-            pred_mask = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
+            # logit = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
+            logit = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
 
-            # result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=pred_mask, aug_type='strong')
+            # result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=logit, aug_type='strong')
             # result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
-            result_dict['flow_mask_lw'] = pred_mask
+            result_dict['flow_logit_lw'] = logit
             # ---------------------------------------------------------
             
         elif mode == 'val':

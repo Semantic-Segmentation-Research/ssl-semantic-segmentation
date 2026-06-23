@@ -265,3 +265,72 @@ def get_tf_cosine_decay_restarts_lambda(first_decay_steps, t_mul=2.0, m_mul=0.8,
         return m_fac * (alpha + (1.0 - alpha) * cosine_decay)
         
     return lr_lambda
+
+class PrintFormat:
+    def __init__(self, tcfg, unlabel_train_loader):
+        
+        self.tcfg = tcfg
+        self.unlabel_train_loader = unlabel_train_loader
+        
+
+    def format_hyperparam(self, step, epoch, elapsed_time, time_left, full_metrics):
+        return (
+            f"Model: {self.tcfg.model_name:>10} | "
+            f"Epoch: {epoch:>3}/{self.tcfg.num_epochs:<3} | "
+            f"Step: {step:>4}/{len(self.unlabel_train_loader):<4} | "
+            f"Time Left: {time_left:>8} | "
+            f"Elapsed: {elapsed_time:5.2f}s | "
+            f"Full: {full_metrics.compute():6.3f}"
+        )
+        
+        
+
+    def format_metric_line(self, metric_items):
+        return " | ".join(f"{name:12s}: {value:6.3f}" for name, value in metric_items)
+
+
+
+    def format_label_loss_info(self, 
+                               total_label_metrics,
+                               label_metrics,
+                               label_fp_metrics,
+                               label_flow_metrics,
+                               label_corr_metrics,
+                               label_dice_metrics,
+                               label_corr_dice_metrics,
+                               label_flow_dice_metrics):
+        
+        return self.format_metric_line([
+            ("Total Label", total_label_metrics.compute()),
+            ("Label", label_metrics.compute()),
+            ("Label fp", label_fp_metrics.compute()),
+            ("Flow Label", label_flow_metrics.compute()),
+            ("Corr Label", label_corr_metrics.compute()),
+            ("Dice Label", label_dice_metrics.compute()),
+            ("Corr Dice Label", label_corr_dice_metrics.compute()),
+            ("Flow Dice Label", label_flow_dice_metrics.compute()),
+        ])
+
+
+
+    def format_unlabel_loss_info(self,
+                                total_unlabel_metrics,
+                                # us_flow_metrics,
+                                us_corr_metrics,
+                                uw_corr_metrics,
+                                uw_flow_metrics,
+                                u_flow_metrics,
+                                uw_fp_metrics,
+                                mask_ratio):
+        
+        
+        return self.format_metric_line([
+            ("Total UnLabel", total_unlabel_metrics.compute()),
+            # ("Flow US", us_flow_metrics.compute()),
+            ("Corr US", us_corr_metrics.compute()),
+            ("Corr UW", uw_corr_metrics.compute()),
+            ("Flow UW", uw_flow_metrics.compute()),
+            ("Flow U", u_flow_metrics.compute()),
+            ("UW FP", uw_fp_metrics.compute()),
+            ("Mask", mask_ratio),
+        ])

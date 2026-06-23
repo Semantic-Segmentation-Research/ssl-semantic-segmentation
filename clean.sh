@@ -4,7 +4,7 @@ codes_dir="/workspace/experiments/codes"
 logs_dir="/workspace/experiments/logs"
 models_dir="/workspace/experiments/models"
 
-model_name="v1.5.4_LTU"
+model_name="v1.5.5_LTU"
 rm -rf ${backups_dir}/${model_name}
 rm -rf ${codes_dir}/${model_name}
 rm -rf ${logs_dir}/${model_name}

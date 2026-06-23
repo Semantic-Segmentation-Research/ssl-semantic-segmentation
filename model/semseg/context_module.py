@@ -129,19 +129,19 @@ class CrossCovarianceAtt(nn.Module):
         attn = F.softmax(attn.float(), dim=-1).type_as(attn)
         xca = torch.bmm(attn, v)
 
-        # xca = F.softmax(xca, dim=1)
+        corr_prob = F.softmax(xca, dim=1)
 
         if aug_type =='weak':
-            xca_ = F.softmax(xca, dim=1)
-            result_dict['binary_norm_corr_map'] = self.normalize_xca_map(xca_, enc_height, enc_width, dec_height, dec_width)
+            # corr_prob = F.softmax(xca, dim=1)
+            result_dict['binary_norm_corr_map'] = self.normalize_xca_map(corr_prob, enc_height, enc_width, dec_height, dec_width)
         
-        xca_conf_reshape = rearrange(xca, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
-        xca_conf_reshape = self.proj(xca_conf_reshape)
+        corr_prob_reshaped = rearrange(corr_prob, 'n c (h w) -> n c h w', h=enc_height, w=enc_width)
+        corr_prob_reshaped = self.proj(corr_prob_reshaped)
         
-        # dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
         dec_out = F.interpolate(dec_out, (enc_height, enc_width), mode='bilinear', align_corners=True)
-        # corr_dec_out = dec_out * xca_conf_reshape
-        corr_dec_out = dec_out + xca_conf_reshape
+        corr_dec_out = dec_out * corr_prob_reshaped
+        # dec_out = F.interpolate(dec_out.detach(), (enc_height, enc_width), mode='bilinear', align_corners=True)
+        # corr_dec_out = dec_out + corr_prob_reshaped
         corr_dec_out = F.interpolate(corr_dec_out, size=(self.output_size, self.output_size), mode="bilinear", align_corners=True)
         # 5번 수식
         result_dict['corr_dec_out'] = corr_dec_out

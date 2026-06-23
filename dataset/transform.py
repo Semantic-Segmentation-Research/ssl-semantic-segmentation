@@ -83,19 +83,6 @@ def blur(img, p=0.5):
     return img
 
 
-def gaussian_blur_feature(x, kernel_size=3, sigma=1.0):
-    # 가우시안 커널 생성
-    x_range = torch.arange(kernel_size, device=x.device) - (kernel_size - 1) / 2
-    gauss = torch.exp(-x_range**2 / (2 * sigma**2))
-    gauss = gauss / gauss.sum()
-    
-    # 2D 커널로 확장 [C, 1, K, K]
-    kernel = gauss[:, None] * gauss[None, :]
-    kernel = kernel.expand(x.shape[1], 1, kernel_size, kernel_size).to(x.device)
-    
-    # Depthwise Convolution으로 블러 적용
-    return F.conv2d(x, kernel, groups=x.shape[1], padding=kernel_size//2)
-
 
 def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
     mask = torch.zeros(img_size, img_size) # img(h,w) 정사각형크기의 0으로 된 mask tensor

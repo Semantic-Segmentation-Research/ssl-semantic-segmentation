@@ -59,16 +59,15 @@ def evaluate(tcfg, mcfg, model, loader, mode):
                 pred = final.argmax(dim=1)
                 conf = final.softmax(dim=1).max(dim=1).values
                 
-            else:
-                if mode == 'center_crop':
-                    h, w = img.shape[-2:]
-                    start_h, start_w = (h - tcfg.crop_size) // 2, (w - tcfg.crop_size) // 2
-                    img = img[:, :, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
-                    mask = mask[:, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
+            elif mode == 'center_crop':
+                h, w = img.shape[-2:]
+                start_h, start_w = (h - tcfg.crop_size) // 2, (w - tcfg.crop_size) // 2
+                img = img[:, :, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
+                mask = mask[:, start_h:start_h + tcfg.crop_size, start_w:start_w + tcfg.crop_size]
 
-                res = model(img, mode='val')
-                pred = res['out'].argmax(dim=1)
-                conf = res['out'].softmax(dim=1).max(dim=1).values
+            res = model(img, mode='val')
+            pred = res['out'].argmax(dim=1)
+            conf = res['out'].softmax(dim=1).max(dim=1).values
                 
             intersection, union, target = \
                 intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), mcfg.num_classes, 255)

@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.5.4_LTU" 
+    model_name: str     = "v1.5.9_LTU" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -57,8 +57,8 @@ class TrainConfig:
     
     batch_size: int     = 4
     accumulation_steps: int = 4
-    lr: float           = 1.25e-4
-    lr_period: int      = 120
+    lr: float           = 2e-4
+    lr_period: int      = 31 # accumulation_step 사용 시 lr_period는 1/accm
     
     
     num_epochs: int     = 240
@@ -79,7 +79,7 @@ class TrainConfig:
     class LossConfig:
         ignore_index: int = 255
         ohem_threshold: float = 0.9
-        ohem_min_kept: int = 100000
+        ohem_min_kept: int = 100000 # 지금 width, height, batch를 고려해 상위 84% 정도
         
         aux_loss_weight: float = 1.0 # 0.4
         

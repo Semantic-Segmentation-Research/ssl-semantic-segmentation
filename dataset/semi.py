@@ -65,6 +65,11 @@ class SemiDataset(Dataset):
         img_w_norm, mask_w_norm = trf.normalize(img_w, mask_w)
         # ---------------------------------------------------------
         if self.mode == 'train_l':
+            if random.random() < 0.8:
+                img_w = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img_w)
+                
+            img_w_norm, mask_w_norm = trf.normalize(img_w, mask_w)
+                
             return img_w_norm, mask_w_norm, image_path
         
         # -------------------- Strong Augmentation --------------------
@@ -76,7 +81,7 @@ class SemiDataset(Dataset):
     def __len__(self):
         return len(self.ids)
     
-    
+    # region weak aug
     def apply_weak_augm(self, img, mask):
         img, mask = trf.resize(img, mask, (0.5, 2.0))
         ignore_value = 254 if self.mode == 'train_u' else self.ignore_label
@@ -86,6 +91,7 @@ class SemiDataset(Dataset):
         return img, mask
         
     
+    # region weak strong
     def apply_strong_augm(self, img, mask):
         if random.random() < 0.8:
             img = transforms.ColorJitter(0.5, 0.5, 0.5, 0.25)(img)

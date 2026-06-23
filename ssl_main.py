@@ -46,23 +46,28 @@ def init_seeds(seed=0, cuda_deterministic=False):
         cudnn.benchmark = True
 
 
-# region - test
+# region - eval_train
 def get_evaluate_train(model, img_uw, img_us, ignore_mask, cutmix_box):
+    """
+    학습에 들어가기 전 unlabel weak와 unlabel strong을 evaluate.
+    """
+    
     indices = torch.randperm(img_uw.size(0), device=device)
     ignore_mask = ignore_mask[indices]
     
-    with torch.no_grad(), torch.amp.autocast('cuda'):
+    # with torch.no_grad(), torch.amp.autocast('cuda'):
+    with torch.no_grad():
         model.eval()
-        res_u_w_pred = model(img_uw[indices], mode='val')
+        res_uw_pred = model(img_uw[indices], mode='val')
         
-        logit_u_w = res_u_w_pred['out'].detach()
-        prob_u_w = logit_u_w.softmax(dim=1) # logit은 모델의 확신 점수이다.
-        conf_u_w, mask_u_w = prob_u_w.max(dim=1) # pseudo label
+        logit_uw = res_uw_pred['out'].detach()
+        prob_uw = logit_uw.softmax(dim=1) # logit은 모델의 확신 점수이다.
+        conf_uw, mask_uw = prob_uw.max(dim=1) # pseudo label
         
         img_us[cutmix_box.unsqueeze(1).expand(img_us.shape) == 1] = \
             img_us[indices][cutmix_box.unsqueeze(1).expand(img_us.shape) == 1]
         
-        return conf_u_w, mask_u_w, img_us, ignore_mask
+        return conf_uw, mask_uw, img_us, ignore_mask
 
 
 # region - main
@@ -145,6 +150,12 @@ def main():
     loss_uw_cr = losses.unlabel(mode='uw_cr', device=device)
     loss_kl    = losses.unlabel(mode='kl', device=device)
 
+    
+    
+    # region SemiDataset
+    # ----------------------------------------------------------------
+    # SemiDataset 설정
+    # ----------------------------------------------------------------
     unlabel_train_set = SemiDataset(root=tcfg.data_root, 
                                     mode='train_u',
                                     size=tcfg.crop_size,
@@ -161,33 +172,30 @@ def main():
                                  size=tcfg.crop_size,
                                  valid_path=dcfg.val_id_path) 
 
-    use_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
-    trainsampler_l = torch.utils.data.distributed.DistributedSampler(label_train_set) if use_ddp else None
+    # region DataLoader
+    # ----------------------------------------------------------------
+    # DataLoader 설정
+    # ----------------------------------------------------------------
     label_train_loader = DataLoader(label_train_set, 
-                               batch_size=tcfg.batch_size,
-                               pin_memory=True, 
-                               num_workers=tcfg.num_workers, 
-                               drop_last=True, 
-                               shuffle=(trainsampler_l is None),
-                               sampler=trainsampler_l)
+                                    batch_size=tcfg.batch_size,
+                                    pin_memory=True, 
+                                    num_workers=tcfg.num_workers, 
+                                    drop_last=True,
+                                    shuffle=True)
     
-    trainsampler_u = torch.utils.data.distributed.DistributedSampler(unlabel_train_set) if use_ddp else None
     unlabel_train_loader = DataLoader(unlabel_train_set, 
                                       batch_size=tcfg.batch_size,
                                       pin_memory=True, 
                                       num_workers=tcfg.num_workers, 
-                                      drop_last=True, 
-                                      shuffle=(trainsampler_u is None),
-                                      sampler=trainsampler_u)
+                                      drop_last=True,
+                                      shuffle=True)
     
-    valsampler = torch.utils.data.distributed.DistributedSampler(validation_set) if use_ddp else None
     validation_loader = DataLoader(validation_set, 
                                    batch_size=1, 
                                    pin_memory=True, 
                                    num_workers=tcfg.num_workers,
                                    drop_last=False, 
-                                   shuffle=(valsampler is None),
-                                   sampler=valsampler)
+                                   shuffle=True)
 
     writer = SummaryWriter(osp.join(tcfg.exp_dir, "logs", tcfg.model_name))
     tb = SSLTensorBoard(writer)
@@ -249,13 +257,14 @@ def main():
         
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
         
-
-
+    _print_ = utils.PrintFormat(tcfg, unlabel_train_loader)
+    
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     
     accum_counter = 0
     step_in_epoch = 0
+    
     
     # region - Train
     # scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
@@ -323,21 +332,21 @@ def main():
             with torch.amp.autocast('cuda'):
                 results = model(torch.cat((img_lw, img_uw, img_us)))
             
-            flow_mask_lw                = results['flow_mask_lw']
+            flow_logit_lw               = results['flow_logit_lw']
             # corr_mask_lw                = results['corr_mask_lw']
             
-            pred_lw, pred_uw            = results['mask_lw_uw'].split([label_batch, unlabel_batch])
-            pred_corr_lw, pred_corr_uw  = results['corr_mask_lw_uw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
-            # pred_uw_fp                  = results['mask_lw_uw_fp'][label_batch:]
-            pred_lw_fp, pred_uw_fp      = results['mask_lw_uw_fp'].split([label_batch, unlabel_batch])
+            logit_lw, logit_uw            = results['logit_lw_uw'].split([label_batch, unlabel_batch])
+            corr_logit_lw, corr_logit_uw  = results['corr_logit_lw_uw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 logit_uw_corr
+            # logit_uw_fp                  = results['logit_lw_uw_fp'][label_batch:]
+            logit_lw_fp, logit_uw_fp      = results['logit_lw_uw_fp'].split([label_batch, unlabel_batch])
             
-            flow_mask_uw                = results['flow_mask_uw']
-            flow_mask_us                = results['flow_mask_us']
-            corr_mask_us                = results['corr_mask_us']
+            flow_logit_uw   = results['flow_logit_uw']
+            flow_logit_us   = results['flow_logit_us']
+            corr_logit_us   = results['corr_logit_us']
 
             # 2번 수식의 max F_hat
-            pred_uw_prob = pred_uw.detach().softmax(dim=1)
-            pred_conf_uw, pred_mask_uw = pred_uw_prob.max(dim=1)
+            logit_uw_prob = logit_uw.detach().softmax(dim=1)
+            pred_conf_uw, pred_mask_uw = logit_uw_prob.max(dim=1)
 
             pred_mask_uw_cutmixed, pred_conf_uw_cutmixed, ignore_mask_cutmixed = pred_mask_uw.clone(), pred_conf_uw.clone(), ignore_mask.clone()
             # labeled + unlabeled weak간의 유사도가 높은부분에서의 unlabeled part
@@ -359,7 +368,7 @@ def main():
             # --------------------------------------------------------------------------------
             
             # ---------------------------- 모델이 예측한 신뢰도에서 threshold 걺 ----------------------------
-            thresh_controller.thresh_update(pred_uw.detach(), ignore_mask_cutmixed, update_g=True)
+            thresh_controller.thresh_update(logit_uw.detach(), ignore_mask_cutmixed, update_g=True)
             thresh_global = thresh_controller.get_thresh_global()
             # 2번 수식 (M_i)
             # conf_filter_uw : dynamic threshold를 통한 학습된 예측값 + 테스트 예측값 신뢰도에서 더 정확한 신뢰도만을 가져온것. 
@@ -402,59 +411,67 @@ def main():
             # --------------------------------------------------------------------
             # label part
             # --------------------------------------------------------------------
-            label_loss      = loss_ohem(pred_lw, gt_lw, 
+            label_loss      = loss_ohem(logit_lw, gt_lw, 
                                         ignore_index=tcfg.LossConfig.ignore_index,
                                         threshold=tcfg.LossConfig.ohem_threshold,
                                         min_kept=tcfg.LossConfig.ohem_min_kept)
-            label_fp_loss   = loss_ohem(pred_lw_fp, gt_lw, 
+            label_fp_loss   = loss_ohem(logit_lw_fp, gt_lw, 
                                         ignore_index=tcfg.LossConfig.ignore_index,
                                         threshold=tcfg.LossConfig.ohem_threshold,
                                         min_kept=tcfg.LossConfig.ohem_min_kept)
-            label_loss_corr = loss_ohem(pred_corr_lw, gt_lw, 
+            label_loss_corr = loss_ohem(corr_logit_lw, gt_lw, 
                                         ignore_index=tcfg.LossConfig.ignore_index,
                                         threshold=tcfg.LossConfig.ohem_threshold,
                                         min_kept=tcfg.LossConfig.ohem_min_kept)
-            label_flow_loss  = loss_ohem(flow_mask_lw, gt_lw, 
+            label_flow_loss  = loss_ohem(flow_logit_lw, gt_lw, 
                                         ignore_index=tcfg.LossConfig.ignore_index,
                                         threshold=tcfg.LossConfig.ohem_threshold,
                                         min_kept=tcfg.LossConfig.ohem_min_kept)
             
-            # label_dice_loss      = loss_dice(pred_lw, gt_lw)
-            # lw_corr_dice_loss    = loss_dice(pred_corr_lw, gt_lw)
-            # label_flow_dice_loss = loss_dice(flow_mask_lw, gt_lw)
+            label_dice_loss      = loss_dice(logit_lw, gt_lw)
+            lw_corr_dice_loss    = loss_dice(corr_logit_lw, gt_lw)
+            label_flow_dice_loss = loss_dice(flow_logit_lw, gt_lw)
             
-            
-            ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.9*label_flow_loss
-            # dice_loss = (label_dice_loss + lw_corr_dice_loss)
-            # total_label_loss = ohem_loss + dice_loss
-            total_label_loss = ohem_loss
+            ohem_loss = label_loss + label_fp_loss + label_loss_corr + label_flow_loss
+            dice_loss = (label_dice_loss + lw_corr_dice_loss + label_flow_dice_loss)
+            total_label_loss = ohem_loss + dice_loss
+            # total_label_loss = ohem_loss
             
             # --------------------------------------------------------------------
             # unlabel part
             # --------------------------------------------------------------------
-            us_flow_loss = loss_us_cr(pred=flow_mask_us,
-                                true=pred_mask_uw_cutmixed, 
-                                confidence=conf_filter_uw_wo_cutmix, 
-                                ignore_mask=ignore_mask_cutmixed)
+            # us_flow_loss = loss_us_cr(pred=flow_logit_us,
+            #                           true=pred_mask_uw_cutmixed, 
+            #                           confidence=conf_filter_uw_wo_cutmix, 
+            #                           ignore_mask=ignore_mask_cutmixed)
             
-            us_corr_loss = loss_us_cr(pred=corr_mask_us, 
+            us_corr_loss = loss_us_cr(pred=corr_logit_us, 
                                     true=pred_mask_uw_cutmixed, 
                                     confidence=conf_filter_uw_wo_cutmix, 
                                     ignore_mask=ignore_mask_cutmixed)
+            
             # 6번 수식
-            uw_corr_loss = loss_uw_cr(pred=pred_corr_uw, 
+            uw_corr_loss = loss_uw_cr(pred=corr_logit_uw, 
                                     true=pred_mask_uw, 
                                     confidence=pred_conf_uw,
                                     threshold=thresh_global,
                                     ignore_mask=ignore_mask)
-            # 3번 수식
-            # u_flow_kl   = loss_kl(flow_mask_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
-            uw_flow_kl  = loss_kl(flow_mask_uw, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
-            uw_fp_cr    = loss_uw_cr(pred=pred_uw_fp, 
+            
+            uw_fp_cr    = loss_uw_cr(pred=logit_uw_fp, 
                                     true=pred_mask_uw, 
                                     confidence=pred_conf_uw, 
                                     threshold=thresh_global, 
                                     ignore_mask=ignore_mask)
+            
+            uw_flow_loss = loss_uw_cr(pred=flow_logit_uw, 
+                                      true=pred_mask_uw, 
+                                      confidence=pred_conf_uw, 
+                                      threshold=thresh_global, 
+                                      ignore_mask=ignore_mask)
+            # 3번 수식
+            u_flow_kl   = loss_kl(flow_logit_us, logit_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+            uw_flow_kl  = loss_kl(flow_logit_uw, logit_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+            
             
             # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
             # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
@@ -463,9 +480,7 @@ def main():
             # total_unlabel_loss = 0.5 * loss_us + 0.25 * loss_us_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
             # ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.5 * label_loss_corr2 + tcfg.LossConfig.aux_loss_weight * label_flow_loss + 5 * label_dice_loss
             
-            loss_u_corr = 0.5 * (us_corr_loss + uw_corr_loss)
-            # total_unlabel_loss = us_flow_loss + loss_u_corr + 0.25 * (u_flow_kl + uw_flow_kl) + 0.25 * uw_fp_cr
-            total_unlabel_loss = 0.5 * us_flow_loss + loss_u_corr + 0.25 * uw_flow_kl + 0.25 * uw_fp_cr
+            total_unlabel_loss = 0.5 * (u_flow_kl + us_corr_loss + uw_corr_loss) + 0.25 * uw_flow_loss + 0.25 * uw_fp_cr
             
             full_loss = total_label_loss + total_unlabel_loss
 
@@ -509,18 +524,18 @@ def main():
             label_fp_metrics.update(label_fp_loss.detach())
             label_corr_metrics.update(label_loss_corr.detach())
             label_flow_metrics.update(label_flow_loss.detach())
-            # label_dice_metrics.update(label_dice_loss.detach())
-            # label_corr_dice_metrics.update(lw_corr_dice_loss.detach())
-            # label_flow_dice_metrics.update(label_flow_dice_loss.detach())
+            label_dice_metrics.update(label_dice_loss.detach())
+            label_corr_dice_metrics.update(lw_corr_dice_loss.detach())
+            label_flow_dice_metrics.update(label_flow_dice_loss.detach())
             total_label_metrics.update(total_label_loss.detach())
             
             # --------------------------------------------------------------------
             # unlabel part
             # --------------------------------------------------------------------
-            us_flow_metrics.update(us_flow_loss.detach())
+            # us_flow_metrics.update(us_flow_loss.detach())
             us_corr_metrics.update(us_corr_loss.detach())
             uw_corr_metrics.update(uw_corr_loss.detach())
-            # u_flow_metrics.update(u_flow_kl.detach())
+            u_flow_metrics.update(u_flow_kl.detach())
             uw_flow_metrics.update(uw_flow_kl.detach())
             uw_fp_metrics.update(uw_fp_cr.detach())
             total_unlabel_metrics.update(total_unlabel_loss.detach())
@@ -537,20 +552,28 @@ def main():
             time_left = (num_total_steps - iters) * elapsed_time
             time_left = str(datetime.timedelta(seconds=int(time_left)))
             
+            # region print
             if step % 10 == 0:
-                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s"
-                label_loss_info = f"Full: {full_metrics.compute():.3f}, 🏷️ Total Label: {total_label_metrics.compute():.3f}, Label fp: {label_fp_metrics.compute():.3f}, " \
-                                  f"🏷️ Flow Label: {label_flow_metrics.compute():.3f} " \
+                hyperparam = _print_.format_hyperparam(step, epoch, elapsed_time, time_left, full_metrics)
                 
-                # unlabel_loss_info = f"Total UnLabel: {total_unlabel_metrics.compute():.3f}, 🏷️ Flow US: {us_flow_metrics.compute():.3f}, Corr US: {us_corr_metrics.compute():.3f}, " \
-                #                     f"Corr UW: {uw_corr_metrics.compute():.3f}, 🏷️ Flow U: {u_flow_metrics.compute():.3f}, 🏷️ Flow UW: {uw_flow_metrics.compute():.3f}, " \
-                #                     f"UW FP: {uw_fp_metrics.compute():.3f}, " \
-                #                     f"Mask: {total_mask_ratio/(step+1):.3f}"
-                unlabel_loss_info = f"Total UnLabel: {total_unlabel_metrics.compute():.3f}, 🏷️ Flow US: {us_flow_metrics.compute():.3f}, Corr US: {us_corr_metrics.compute():.3f}, " \
-                                    f"Corr UW: {uw_corr_metrics.compute():.3f}, 🏷️ Flow UW: {uw_flow_metrics.compute():.3f}, " \
-                                    f"UW FP: {uw_fp_metrics.compute():.3f}, " \
-                                    f"Mask: {total_mask_ratio/(step+1):.3f}"
+                label_loss_info = _print_.format_label_loss_info(total_label_metrics,
+                                                                 label_metrics,
+                                                                 label_fp_metrics,
+                                                                 label_flow_metrics,
+                                                                 label_corr_metrics,
+                                                                 label_dice_metrics,
+                                                                 label_corr_dice_metrics,
+                                                                 label_flow_dice_metrics)
                 
+                unlabel_loss_info = _print_.format_unlabel_loss_info(total_unlabel_metrics,
+                                                                    #  us_flow_metrics,
+                                                                     us_corr_metrics,
+                                                                     uw_corr_metrics,
+                                                                     uw_flow_metrics,
+                                                                     u_flow_metrics,
+                                                                     uw_fp_metrics,
+                                                                     total_mask_ratio / (step + 1))
+
                 line_sep.set_description_str("=" * 100)
                 line_hyper.set_description_str(hyperparam)
                 line_label.set_description_str(label_loss_info)
@@ -581,25 +604,26 @@ def main():
         line_label.close()
         line_unlabel.close()
         
-        # region step 끝
         torch.cuda.empty_cache()
         res_val = evaluate(tcfg, mcfg, model, validation_loader, mode=tcfg.eval_mode)
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/Full Loss": full_metrics.compute(), 
                                           "Label/Total Loss": total_label_metrics.compute(),
+                                          "Label/Label Loss": label_metrics.compute(),
                                           "Label/FP Loss": label_fp_metrics.compute(), 
                                           "Label/Flow Loss": label_flow_metrics.compute(), 
-                                        #   "Label/Dice Loss": label_dice_metrics.compute(), 
-                                        #   "Label/Corr Dice Loss": label_corr_dice_metrics.compute(), 
-                                        #   "Label/Flow Dice Loss": label_flow_dice_metrics.compute(), 
+                                          "Label/Corr Loss": label_corr_metrics.compute(),
+                                          "Label/Dice Loss": label_dice_metrics.compute(), 
+                                          "Label/Corr Dice Loss": label_corr_dice_metrics.compute(), 
+                                          "Label/Flow Dice Loss": label_flow_dice_metrics.compute(), 
                                           
                                           "UnLabel/Total Loss": total_unlabel_metrics.compute(), 
-                                          "UnLabel/Flow US": us_flow_metrics.compute(),
+                                        #   "UnLabel/Flow US": us_flow_metrics.compute(),
                                           "UnLabel/Corr US": us_corr_metrics.compute(), 
                                           "UnLabel/Corr UW": uw_corr_metrics.compute(),
-                                        #   "UnLabel/Flow U": u_flow_metrics.compute(), 
-                                          "UnLabel/Flow Uw": uw_flow_metrics.compute(),
+                                          "UnLabel/Flow U": u_flow_metrics.compute(), 
+                                          "UnLabel/Flow UW": uw_flow_metrics.compute(),
                                           "UnLabel/FP UW": uw_fp_metrics.compute(),
                                           
                                           "Optimization/learning_rate": lr,
@@ -607,8 +631,8 @@ def main():
                                           })
         
         img_us = img_us.detach().cpu().permute(0, 2, 3, 1).numpy()
-        pred_mask_us = flow_mask_us.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_us = flow_mask_us.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        pred_mask_us = flow_logit_us.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_us = flow_logit_us.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/unlabel strong image", 
                       image=img_us, 
                       pred=pred_mask_us,
@@ -618,15 +642,15 @@ def main():
                       epoch=epoch)
 
         img_lw = img_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
-        flow_mask_lw = pred_lw.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
-        conf_l = pred_lw.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        flow_logit_lw = logit_lw.detach().argmax(dim=1).unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
+        conf_l = logit_lw.detach().softmax(dim=1).max(dim=1).values.unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         if gt_lw.dim() == 4:
             gt = gt_lw.detach().cpu().permute(0, 2, 3, 1).numpy()
         elif gt_lw.dim() == 3:
             gt = gt_lw.detach().unsqueeze(1).cpu().permute(0, 2, 3, 1).numpy()
         tb.draw_image(tag="train/label weak image", 
                       image=img_lw, 
-                      pred=flow_mask_lw,
+                      pred=flow_logit_lw,
                       conf=conf_l,
                       mask=gt,
                       image_path=u_image_path,
