@@ -308,15 +308,17 @@ def main():
             
             model.train()
             label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
+
             
-            with torch.no_grad(), torch.amp.autocast('cuda'):
-                m_core = model.module if hasattr(model, 'module') else model
-                
-                # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
-                c1_l, c2_l, c3_l, c4_l = m_core.backbone.base_forward(img_lw)
-                
-                # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
-                m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
+            if epoch > 1:
+                with torch.no_grad(), torch.amp.autocast('cuda'):
+                    m_core = model.module if hasattr(model, 'module') else model
+                    
+                    # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
+                    c1_l, c2_l, c3_l, c4_l = m_core.backbone.base_forward(img_lw)
+                    
+                    # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
+                    m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
             
             
             with torch.amp.autocast('cuda'):
@@ -474,11 +476,15 @@ def main():
 
             iters = epoch * len(unlabel_train_loader) + step
             if accum_counter == tcfg.accumulation_steps:
+                scale_before = scaler.get_scale()
+                
                 scaler.step(optimizer)
                 scaler.update()
                 
-                scheduler.step()
                 optimizer.zero_grad()
+                scale_after = scaler.get_scale()
+                if scale_before <= scale_after:
+                    scheduler.step()
                 
                 iters = epoch * len(unlabel_train_loader) + step_in_epoch
                 # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
@@ -548,11 +554,16 @@ def main():
             
             
         if accum_counter > 0:
+            scale_before = scaler.get_scale()
+            
             scaler.step(optimizer)
             scaler.update()
             
-            scheduler.step()
             optimizer.zero_grad()
+            scale_after = scaler.get_scale()
+            if scale_before <= scale_after:
+                scheduler.step()
+            
             accum_counter = 0
             
         

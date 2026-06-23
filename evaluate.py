@@ -94,6 +94,7 @@ def evaluate(tcfg, mcfg, model, loader, mode):
     return_dict['mask'] = mask
     return_dict['image_path'] = image_path
     
+    pbar.close()
     # tqdm.write(f' Evaluation: {tcfg.eval_mode}  >>>> meanIOU: {mIOU:.4f} \n')
     
     # items = list(iou_class_dict.items())
