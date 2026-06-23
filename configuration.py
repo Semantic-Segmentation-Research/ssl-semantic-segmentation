@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from dataclasses import field
 import os.path as osp
 
-BASE_DIR = '/home/dev'
+BASE_DIR = '/workspace'
 
 # region - Data
 @dataclass
@@ -52,21 +52,22 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
     
-    optimizer: str      = "SGD"
-    scheduler: str      = "Polynomial"
+    optimizer: str      = "Adam"
+    scheduler: str      = "cosineDecay"
     
-    batch_size: int     = 8
-    lr: float           = 5e-4 # 5e-3
-    decay_power: float   = 0.9
-    lr_multi: float     = 1.0
+    batch_size: int     = 4
+    accumulation_steps: int = 4
+    lr: float           = 1.25e-3
+    lr_period: int      = 120
+    
+    
     num_epochs: int     = 240
     num_workers: int    = 8
     
-    crop_size: int      = 336
-    local_rank: int     = 0
-    port: int           = 0
+    crop_size: int      = 448
     
-    lr_period: int          = 400
+    decay_power: float  = 0.9
+    lr_multi: float     = 1.0
     label_lr_decay: float   = 0.5
     unlabel_lr_decay: float = 0.9
     resume: bool            = False

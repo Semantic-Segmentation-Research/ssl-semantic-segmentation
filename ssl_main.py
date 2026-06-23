@@ -53,7 +53,7 @@ def get_evaluate_train(model, img_uw, img_us, ignore_mask, cutmix_box):
     indices = torch.randperm(img_uw.size(0), device=device)
     ignore_mask = ignore_mask[indices]
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda'):
         model.eval()
         res_u_w_pred = model(img_uw[indices], mode='val')
         
@@ -72,7 +72,7 @@ def main():
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    rank, world_size = setup_distributed(port=tcfg.port)
+    # rank, world_size = setup_distributed(port=tcfg.port)
     init_seeds(0, False)
 
     # model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
@@ -132,12 +132,11 @@ def main():
     # ===================================================================
 
 
-
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
     
-    if world_size > 1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    # if world_size > 1:
+    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     losses = LossFactory()
     # loss_ce     = losses.label(mode='ce', device=device)
@@ -257,6 +256,9 @@ def main():
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     
+    accum_counter = 0
+    step_in_epoch = 0
+    
     # region - Train
     scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
     for epoch in range(start_epoch, tcfg.num_epochs):
@@ -293,9 +295,10 @@ def main():
         line_label  = tqdm(total=0, position=3, bar_format='{desc}')
         line_unlabel = tqdm(total=0, position=4, bar_format='{desc}')
         
+        
         for step, ((img_lw, gt_lw, l_image_path), (img_uw, img_us, ignore_mask, cutmix_box, u_image_path)) in enumerate(pbar):
             start_event.record()
-        
+
             img_lw, gt_lw       = img_lw.cuda(non_blocking=True), gt_lw.cuda(non_blocking=True)
             img_uw              = img_uw.cuda(non_blocking=True)
             img_us, ignore_mask = img_us.cuda(non_blocking=True), ignore_mask.cuda(non_blocking=True)
@@ -306,7 +309,7 @@ def main():
             model.train()
             label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
             
-            with torch.no_grad():
+            with torch.no_grad(), torch.amp.autocast('cuda'):
                 m_core = model.module if hasattr(model, 'module') else model
                 
                 # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
@@ -314,6 +317,7 @@ def main():
                 
                 # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
                 m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
+            
             
             with torch.amp.autocast('cuda'):
                 results = model(torch.cat((img_lw, img_uw, img_us)))
@@ -463,15 +467,31 @@ def main():
                 full_loss = total_label_loss + total_unlabel_loss
 
 
-            optimizer.zero_grad()
-            scaler.scale(full_loss).backward()
-            scaler.unscale_(optimizer)
-
+            scaler.scale(full_loss / tcfg.accumulation_steps).backward()
+            accum_counter += 1
+            # scaler.unscale_(optimizer)
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            # scheduler.step()
-            
+
+            iters = epoch * len(unlabel_train_loader) + step
+            if accum_counter == tcfg.accumulation_steps:
+                scaler.step(optimizer)
+                scaler.update()
+                
+                scheduler.step()
+                optimizer.zero_grad()
+                
+                iters = epoch * len(unlabel_train_loader) + step_in_epoch
+                # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
+                # # current_cycle_epoch = epoch % tcfg.lr_period
+                # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
+                # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
+                
+                # lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
+                # optimizer.param_groups[0]["lr"] = lr
+                # optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
+                lr = scheduler.get_last_lr()[0]
+                step_in_epoch += 1
+                accum_counter = 0
 
             # --------------------------------------------------------------------
             # label part
@@ -501,18 +521,6 @@ def main():
             total_mask_ratio += ((pred_conf_uw >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
             
-            
-            iters = epoch * len(unlabel_train_loader) + step
-            # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
-            # # current_cycle_epoch = epoch % tcfg.lr_period
-            # # iters = current_cycle_epoch * len(unlabel_train_loader) + step
-            # # num_cycle_steps = tcfg.lr_period * len(unlabel_train_loader)
-            
-            lr = tcfg.lr * (1 - iters / num_total_steps) ** tcfg.decay_power
-            optimizer.param_groups[0]["lr"] = lr
-            optimizer.param_groups[1]["lr"] = lr * tcfg.lr_multi
-            # lr = scheduler.get_last_lr()[0]
-            
             end_event.record()
             torch.cuda.synchronize()
             
@@ -521,7 +529,7 @@ def main():
             time_left = str(datetime.timedelta(seconds=int(time_left)))
             
             if step % 10 == 0:
-                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time*50:.2f}s"
+                hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s"
                 label_loss_info = f"Full: {full_metrics.compute():.3f}, 🏷️ Total Label: {total_label_metrics.compute():.3f}, Label fp: {label_fp_metrics.compute():.3f}, " \
                                   f"🏷️ Flow Label: {label_flow_metrics.compute():.3f}, Dice Label: {label_dice_metrics.compute():.3f}, 🏷️ Corr Dice Label: {label_corr_dice_metrics.compute():.3f}, " \
                                   f"🏷️ Flow Dice Label:{label_flow_dice_metrics.compute():.3f}"
@@ -531,19 +539,26 @@ def main():
                                     f"UW FP: {uw_fp_metrics.compute():.3f}, " \
                                     f"Mask: {total_mask_ratio/(step+1):.3f}"
                 
-                # print(hyperparam + '\n' + label_loss_info + '\n' + unlabel_loss_info, end='\r')
-                # print('\n')
-                line_sep.set_description_str("=" * 80)
+                line_sep.set_description_str("=" * 100)
                 line_hyper.set_description_str(hyperparam)
                 line_label.set_description_str(label_loss_info)
                 line_unlabel.set_description_str(unlabel_loss_info)
                 
             del results
-    
+            
+            
+        if accum_counter > 0:
+            scaler.step(optimizer)
+            scaler.update()
+            
+            scheduler.step()
+            optimizer.zero_grad()
+            accum_counter = 0
+            
     
         # region step 끝
         torch.cuda.empty_cache()
-        res_val = evaluate(tcfg, mcfg, rank, model, validation_loader, mode=tcfg.eval_mode)
+        res_val = evaluate(tcfg, mcfg, model, validation_loader, mode=tcfg.eval_mode)
         
         # region  tensorboard
         tb.draw_scalar(epoch=epoch, item={"Optimization/Full Loss": full_metrics.compute(), 
@@ -604,12 +619,7 @@ def main():
                       image_path=res_val['image_path'][0],
                       epoch=epoch)
 
-
-        logger.info(f'***** Evaluation {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-        summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in res_val['iou_class'].items())
-        print(f"[Class IoU]: {summary} \n")
-                
-        if res_val['mIOU'] > previous_best and rank == 0:
+        if res_val['mIOU'] > previous_best:
             if previous_best != 0:
                 os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
@@ -627,8 +637,6 @@ def main():
                             'optimizer_state_dict': optimizer.state_dict()},
                         osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
         
-        if rank != 0:
-            torch.distributed.barrier()
         torch.cuda.empty_cache()
 
 
@@ -643,7 +651,6 @@ if __name__ == '__main__':
     os.makedirs(osp.join(tcfg.exp_dir, "logs", tcfg.model_name), exist_ok=True)
     os.makedirs(osp.join(tcfg.exp_dir, "models", tcfg.model_name), exist_ok=True)
     os.makedirs(osp.join(tcfg.exp_dir, "codes", tcfg.model_name), exist_ok=True)
-    os.makedirs(osp.join(tcfg.exp_dir, "backups", tcfg.model_name), exist_ok=True)
     
     utils.save_codes(tcfg, osp.dirname(__file__))
     main()

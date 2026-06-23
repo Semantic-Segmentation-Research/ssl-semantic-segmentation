@@ -1,29 +1,23 @@
-import argparse
-import os
 import numpy as np
 import torch
-import torch.distributed as dist
-from util.dist_helper import setup_distributed
-from model.semseg.deeplabv3plus import DeepLabV3Plus
-
-from torch.utils.data import DataLoader
-import yaml
 from dataset.semi import SemiDataset
 from util.utils import AverageMeter, intersectionAndUnion, labels
+from tqdm import tqdm
 
 
 filtered_labels = [label for label in labels if label.trainId != 255 and label.trainId != -1]
 
-def evaluate(tcfg, mcfg, rank, model, loader, mode):
+def evaluate(tcfg, mcfg, model, loader, mode):
     return_dict = {}
     model.eval()
     assert mode in ['original', 'center_crop', 'sliding_window']
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
 
-    print("Start evaluation...")
-    with torch.no_grad():
-        for img, mask, image_path in loader:
+    # print("📊 Start evaluation...")
+    pbar = tqdm(loader, desc="📊 Start evaluation...", total=len(loader), position=5)
+    with torch.no_grad(), torch.amp.autocast('cuda'):
+        for img, mask, image_path in pbar:
             img = img.cuda(non_blocking=True)
             b, _, h, w = img.shape
             
@@ -82,10 +76,6 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
             reduced_union = torch.from_numpy(union).cuda()
             reduced_target = torch.from_numpy(target).cuda()
             
-            if rank != 0:
-                dist.all_reduce(reduced_intersection)
-                dist.all_reduce(reduced_union)
-                dist.all_reduce(reduced_target)
 
             intersection_meter.update(reduced_intersection.cpu().numpy())
             union_meter.update(reduced_union.cpu().numpy())
@@ -104,40 +94,23 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
     return_dict['mask'] = mask
     return_dict['image_path'] = image_path
 
+    # logger.info(f'***** Evaluation: {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
+    tqdm.write(f'***** Evaluation: {tcfg.eval_mode} ***** >>>> meanIOU: {mIOU:.4f} \n')
+    # summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in iou_class_dict.items())
+    # print(f"[Class IoU]: {summary} \n")
+    items = list(iou_class_dict.items())
+    items_per_line = 4 # 한 줄에 출력할 클래스 개수
+
+    tqdm.write("=" * 65)
+    tqdm.write("📊 [Class IoU Summary]")
+    tqdm.write("-" * 65)
+
+    for i in range(0, len(items), items_per_line):
+        chunk = items[i:i+items_per_line]
+        row = " | ".join(f"{k:<12}: {v:>5.2f}%" for k, v in chunk)
+        tqdm.write(row)
+
+    tqdm.write("=" * 65 + "\n")
+    
     return return_dict
 
-
-def main():
-    parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-    parser.add_argument('--config', type=str, required=True)
-    parser.add_argument('--checkpoint_path', type=str, required=True)
-    parser.add_argument('--local_rank', default=0, type=int)
-    parser.add_argument('--port', default=None, type=int)
-    args = parser.parse_args()
-    setup_distributed(port=args.port)
-    cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
-
-    model = DeepLabV3Plus(cfg)
-    model.load_state_dict(torch.load(args.checkpoint_path))
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model.cuda()
-
-    local_rank = int(os.environ["LOCAL_RANK"])
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
-                                                      output_device=local_rank, find_unused_parameters=False)
-
-    valset = SemiDataset(cfg['dataset'], cfg['data_root'], 'val')
-    valsampler = torch.utils.data.distributed.DistributedSampler(valset)
-    valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4,
-                           drop_last=False, sampler=valsampler)
-
-    model.eval()
-    res_val = evaluate(model, valloader, 'original', cfg)
-    mIOU = res_val['mIOU']
-    iou_class = res_val['iou_class']
-    print(mIOU)
-    print(iou_class)
-
-
-if __name__ == '__main__':
-    main()
