@@ -651,7 +651,7 @@ def main():
 
         if res_val['mIOU'] > previous_best:
             if previous_best != 0:
-                os.remove(osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{previous_best:.3f}.pth'))
+                os.remove(osp.join(tcfg.model_save_dir, f'{tcfg.model_name}_{epoch}_{previous_best:.3f}.pth'))
             previous_best = res_val['mIOU']
             
             if tcfg.scheduler == "cosineDecay":
@@ -659,13 +659,13 @@ def main():
                             "model_state_dict": model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
                             "scheduler_state_dict": scheduler.state_dict()}, 
-                           osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+                           osp.join(tcfg.model_save_dir, f'{tcfg.model_name}_{epoch}_{res_val["mIOU"]:.3f}.pth'))
             
             elif tcfg.scheduler == "Polynomial":
                 torch.save({"epoch": epoch,
                             "model_state_dict": model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict()},
-                        osp.join(tcfg.model_save_dir, f'{mcfg.backbone}_{res_val["mIOU"]:.3f}.pth'))
+                        osp.join(tcfg.model_save_dir, f'{tcfg.model_name}_{epoch}_{res_val["mIOU"]:.3f}.pth'))
         
         torch.cuda.empty_cache()
 
