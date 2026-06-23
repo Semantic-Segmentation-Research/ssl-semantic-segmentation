@@ -4,7 +4,7 @@ codes_dir="/home/dev/experiments/codes"
 logs_dir="/home/dev/experiments/logs"
 models_dir="/home/dev/experiments/models"
 
-model_name="v1.6.3_LTU"
+model_name="v1.6.6_LTU"
 rm -rf ${backups_dir}/${model_name}
 rm -rf ${codes_dir}/${model_name}
 rm -rf ${logs_dir}/${model_name}
