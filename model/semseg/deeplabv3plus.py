@@ -26,7 +26,8 @@ class DeepLabV3Plus(nn.Module):
             ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *4,
+            # ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *4,
+            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *2,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))

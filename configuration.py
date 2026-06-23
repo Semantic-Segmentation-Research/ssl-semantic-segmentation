@@ -55,7 +55,7 @@ class TrainConfig:
     optimizer: str      = "Adam"
     scheduler: str      = "cosineDecay"
     
-    batch_size: int     = 4
+    batch_size: int     = 8
     accumulation_steps: int = 4
     # lr: float           = 2e-4
     lr: float           = 5e-4
