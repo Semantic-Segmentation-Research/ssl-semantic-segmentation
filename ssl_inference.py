@@ -3,23 +3,19 @@ import os.path as osp
 
 import matplotlib
 import torch
-import torch.distributed as dist
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 matplotlib.use('agg')
-import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
 from dataset.semi import SemiDataset
 from model.semseg.deeplabv3plus import DeepLabV3Plus
-# from model.semseg.deeplabv3plus_vis import DeepLabV3Plus
 from configuration import TestConfig, DataConfig, ModelConfig
 from util.utils import intersectionAndUnion, AverageMeter
 import pandas as pd
 import cityscapesLabels as labels
 from tqdm import tqdm
-
+import time
 
 
 
@@ -49,36 +45,59 @@ def color_map():
     return cmap
 
 
+
+
+
 def main():
     model_name = os.listdir(tcfg.model_save_dir)[-1]
     model_path = osp.join(tcfg.model_save_dir, model_name)
-    result_dir = osp.join(osp.dirname(__file__), 'results') 
-    os.makedirs(osp.join(result_dir, 'rgb'), exist_ok=True)
-    os.makedirs(osp.join(result_dir, 'gt'), exist_ok=True)
-    os.makedirs(osp.join(result_dir, 'pred'), exist_ok=True)
+    os.makedirs(osp.join(tcfg.result_dir, 'rgb'), exist_ok=True)
+    os.makedirs(osp.join(tcfg.result_dir, 'gt'), exist_ok=True)
+    os.makedirs(osp.join(tcfg.result_dir, 'pred'), exist_ok=True)
     
     
     model = DeepLabV3Plus(tcfg, mcfg, pretrained_path='')
-    checkpoint = torch.load(model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    checkpoint = torch.load(model_path, map_location='cpu')
+    state_dict = checkpoint['model_state_dict']
+
+    state_dict = {
+        k: v for k, v in state_dict.items()
+        if not k.endswith('total_ops') and not k.endswith('total_params')
+    }
+    model.load_state_dict(state_dict)
+
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
 
     valset = SemiDataset(root=tcfg.data_root, 
-                         mode='test', 
+                         mode='val', 
                          valid_path=tcfg.valid_path,
                          size=tcfg.crop_size)
     valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4, drop_last=False)
-
     
     results = []
     class_names = [l.name for l in labels.labels if l.trainId != 255]
     model.eval()
+    num = 0
+    inference_time = 0
     with torch.no_grad():
+        for _ in range(10):
+            sample = next(iter(valloader))
+            img = sample[0].cuda(non_blocking=True)
+            _ = model(img, mode='val')
+            torch.cuda.synchronize()
+
         for img, mask, image_path in tqdm(valloader, desc='inference'):
             img = img.cuda(non_blocking=True)
-            
-            res = model(img, mode='test')
+
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+
+            res = model(img, mode='val')
+
+            torch.cuda.synchronize()
+            end = time.perf_counter()
+
             pred = res['out']
             pred_mask = pred.argmax(dim=1)
             # pred_conf = pred.softmax(dim=1).max(dim=1)[0]
@@ -87,7 +106,8 @@ def main():
             # pred_conf_fliter = (pred_conf <= tcfg.threshold)
             # mask_fliter = pred_mask.clone()
             # mask_fliter[pred_conf_fliter] = 255
-
+            inference_time += (end - start)
+            num += 1
             for i in range(pred_mask.shape[0]):
                 file_name = osp.split(image_path[i])[-1][:-4]
 
@@ -122,12 +142,17 @@ def main():
                 mask_i.putpalette(platte)
                 mask_pred_i.putpalette(platte)
                 
-                rgb.save(osp.join(result_dir, 'rgb', f'{file_name}_rgb.png'))
-                mask_i.save(osp.join(result_dir, 'gt', f'{file_name}_mask_gt.png'))
-                mask_pred_i.save(osp.join(result_dir, 'pred', f'{file_name}_mask_pred.png'))
-                
+                rgb.save(osp.join(tcfg.result_dir, 'rgb', f'{file_name}_rgb.png'))
+                mask_i.save(osp.join(tcfg.result_dir, 'gt', f'{file_name}_mask_gt.png'))
+                mask_pred_i.save(osp.join(tcfg.result_dir, 'pred', f'{file_name}_mask_pred.png'))
+        
+
+        inference_time /= num
+        inference_time *= 1000
+
+        print(f"Inference Time: {inference_time:.3f}ms")
         df = pd.DataFrame(results)
-        df.to_csv(osp.join(result_dir, 'evaluation_results.csv'), index=False)
+        df.to_csv(osp.join(tcfg.result_dir, 'evaluation_results.csv'), index=False)
 
 
 if __name__ == "__main__":
