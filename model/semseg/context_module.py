@@ -243,7 +243,7 @@ class PrototypeAttention(nn.Module):
         out = torch.bmm(attn, v).transpose(1, 2).view(b, -1, h, w)
         out = self.proj(out)  # [B, C, H, W]
 
-        return feat + self.gamma * out
+        return out + self.gamma * feat
 
 
 
@@ -296,7 +296,7 @@ class FlowAtt(nn.Module):
                 nn.Conv2d(reduc_ch, reduc_ch * exp_ratio, (1, 3), 1, (0, 1), bias=False),
                 nn.BatchNorm2d(reduc_ch * exp_ratio),
                 nn.Conv2d(reduc_ch * exp_ratio, reduc_ch * exp_ratio, (3, 1), 1, (1, 0), bias=False),
-                nn.BatchNorm2d(reduc_ch * exp_ratio)
+                nn.BatchNorm2d(reduc_ch * exp_ratio),
             )),
             ('asy_f2', nn.Sequential(
                 nn.Conv2d(reduc_ch, reduc_ch * exp_ratio, (3, 1), 1, (1, 0), bias=False),
