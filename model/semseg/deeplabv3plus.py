@@ -142,7 +142,6 @@ class DeepLabV3Plus(nn.Module):
         for feat, layer in scales:
             b, c, h, w = feat.shape
 
-            # 레이블을 피처 해상도에 맞게 리사이즈
             label_resized = F.interpolate(
                 label.unsqueeze(1).float(), size=(h, w), mode='nearest'
             ).squeeze(1).long()   # [B, H', W']

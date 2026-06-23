@@ -19,7 +19,7 @@ from util.utils import intersectionAndUnion, AverageMeter
 import pandas as pd
 import cityscapesLabels as labels
 from tqdm import tqdm
-
+import time
 
 
 
@@ -70,15 +70,36 @@ def main():
                          size=tcfg.crop_size)
     valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4, drop_last=False)
 
-    
+    num_warmup = 10
+    num_measure = 100
+
     results = []
+    inference_times = []
+
     class_names = [l.name for l in labels.labels if l.trainId != 255]
     model.eval()
     with torch.no_grad():
-        for img, mask, image_path in tqdm(valloader, desc='inference'):
+        for i, (img, mask, image_path) in enumerate(tqdm(valloader, desc='inference')):
             img = img.cuda(non_blocking=True)
-            
+
+            if i < num_warmup:
+                _ = model(img, mode='test')
+                torch.cuda.synchronize()
+                continue
+
+            if i >= num_warmup + num_measure:
+                break
+
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+
             res = model(img, mode='test')
+
+            torch.cuda.synchronize()
+            end = time.perf_counter()
+
+            inference_times.append(end - start)
+
             pred = res['out']
             pred_mask = pred.argmax(dim=1)
             # pred_conf = pred.softmax(dim=1).max(dim=1)[0]
@@ -125,7 +146,11 @@ def main():
                 rgb.save(osp.join(result_dir, 'rgb', f'{file_name}_rgb.png'))
                 mask_i.save(osp.join(result_dir, 'gt', f'{file_name}_mask_gt.png'))
                 mask_pred_i.save(osp.join(result_dir, 'pred', f'{file_name}_mask_pred.png'))
-                
+
+        inference_times = np.array(inference_times)
+        avg_ms = inference_times.mean() * 1000
+        print(avg_ms)
+        
         df = pd.DataFrame(results)
         df.to_csv(osp.join(result_dir, 'evaluation_results.csv'), index=False)
 

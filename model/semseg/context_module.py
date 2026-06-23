@@ -166,16 +166,16 @@ class CrossCovarianceAtt(nn.Module):
         return norm_corr_map
     
     
-# region - PrototypeAttention
+# region - ProtoAtt
 class PrototypeAttention(nn.Module):
     """
     픽셀 피처(feat)가 클래스 프로토타입 메모리 뱅크를 참조하여 자신을 보정.
- 
+
     Args:
         in_ch      : 입력/출력 채널 수 (residual 연결을 위해 동일하게 유지)
         out_ch     : reduction 후 채널 수 (= FlowAtt의 reduc_ch)
         num_classes: 클래스 프로토타입 개수 (기본 19)
- 
+
     Flow:
         feat [B, C, H, W]
           → reduction → x [B, C', H, W]
@@ -188,9 +188,10 @@ class PrototypeAttention(nn.Module):
     def __init__(self, in_ch, out_ch, num_classes=19):
         super(PrototypeAttention, self).__init__()
         self.num_classes = num_classes
- 
+
         self.reduction = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False),
+            # nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, dilation= 5, padding=5, bias=False),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
@@ -200,7 +201,8 @@ class PrototypeAttention(nn.Module):
         self.proj = nn.Sequential(
             nn.Conv2d(out_ch, in_ch, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(in_ch),
-            nn.Hardswish(inplace=True)
+            # nn.Hardswish(inplace=True)
+            nn.ReLU(inplace=True)
         )
         self.temperature = nn.Parameter(torch.tensor(0.05))
         self.gamma = nn.Parameter(1e-6 * torch.ones((1, in_ch, 1, 1)), requires_grad=True)
@@ -250,7 +252,7 @@ class PrototypeAttention(nn.Module):
 class FlowAtt(nn.Module):
     """
     Memory Bank 기반 피처 정제 모듈.
- 
+
     구성:
       1. PrototypeAttention (xca)
          - 입력 피처를 reduction 후 class_prototypes(메모리 뱅크)를 Key/Value로 삼아
@@ -258,12 +260,12 @@ class FlowAtt(nn.Module):
       2. StarNet (star_layer)
          - Asymmetric depthwise conv (H×1, 1×W 분리) × element-wise 곱으로 피처 정제
          - DropPath 적용
- 
+
     메모리 뱅크 갱신:
       - class_prototypes [num_classes, reduc_ch] : 학습 파라미터가 아닌 버퍼
       - DeepLabV3Plus.update_prototypes() 에서 Labeled 피처 기준 EMA 갱신
       - 갱신 시 xca.reduction 을 통과한 [reduc_ch] 차원 벡터를 사용 (차원 일치)
- 
+
     Args:
         channel    : 입력/출력 채널 (backbone feature 채널)
         reduc_ch   : reduction 후 채널 (= 메모리 뱅크 채널 크기)

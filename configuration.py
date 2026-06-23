@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.6.3_LTU" 
+    model_name: str     = "v1.6.5_LTU" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -102,7 +102,7 @@ class TrainConfig:
 @dataclass
 class TestConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.3.2_LTU"
+    model_name: str     = "v1.6.3_LTU"
 
     valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
     exp_dir: str            = osp.join(BASE_DIR, "experiments")

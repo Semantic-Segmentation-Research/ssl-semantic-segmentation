@@ -288,17 +288,14 @@ def main():
                 results = model(torch.cat((img_lw, img_uw, img_us)))
             
                 flow_logit_lw              = results['flow_logit_lw']
-                # flow_logit_us2             = results['flow_logit_us']
                 
                 logit_lw, logit_uw            = results['logit_lw_uw'].split([label_batch, unlabel_batch])
                 corr_logit_lw, corr_logit_uw  = results['corr_logit_lw_uw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 logit_uw_corr
-                # logit_uw_fp                  = results['logit_lw_uw_fp'][label_batch:]
                 logit_lw_fp, logit_uw_fp      = results['logit_lw_uw_fp'].split([label_batch, unlabel_batch])
                 
                 flow_logit_uw   = results['flow_logit_uw']
                 flow_logit_us   = results['flow_logit_us']
                 corr_logit_us   = results['corr_logit_us']
-                # flow_logit_uws  = results['flow_logit_uws']
 
                 # 2번 수식의 max F_hat
                 logit_uw_prob = logit_uw.detach().softmax(dim=1)
