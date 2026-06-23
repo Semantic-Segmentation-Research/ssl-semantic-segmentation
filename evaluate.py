@@ -18,8 +18,6 @@ def evaluate(tcfg, mcfg, model, loader, mode):
     pbar = tqdm(loader, desc="📊 Start Evaluation...", total=len(loader), position=5)
     with torch.no_grad(), torch.amp.autocast('cuda'):
         for step, (img, mask, image_path) in enumerate(pbar):
-            if step == 1: break
-            
             img = img.cuda(non_blocking=True)
             b, _, h, w = img.shape
             
