@@ -52,6 +52,8 @@ class TrainConfig:
     pretrained_path: str    = osp.join(osp.dirname(__file__), 'pretrained')
     valid_path: str         = osp.join(osp.dirname(__file__), 'partitions', 'cityscapes', 'val.txt')
     
+    optimizer: str      = "SGD"
+    scheduler: str      = "Polynomial"
     
     batch_size: int     = 8
     lr: float           = 5e-4 # 5e-3

@@ -16,6 +16,14 @@ def conv1x1(in_planes, out_planes, stride=1):
 
 # region - Bottleneck
 class Bottleneck(nn.Module):
+    """
+    conv1 module에서 채널을 1/2로 줄이고,
+    conv2 module에서 줄인 상태로 3x3 atrous conv를 수행
+    conv3 module에서 다시 채널을 expansion 만큼 확장
+    
+    그리고 마지막에 residual connection을 수행
+    """
+    
     def __init__(self, inplanes, planes, expansion, stride=1, downsample=None, groups=1,
                  base_width=64, dilation=1, norm_layer=None):
         super(Bottleneck, self).__init__()
@@ -80,8 +88,18 @@ class ResNet(nn.Module):
         self.base_width = mcfg.width_per_group
         
         
-        self.gamma_layer1 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*2)
-        self.gamma_layer2 = clayers.LayerScale(mcfg, input_channel=mcfg.input_channel, gamma_channel=mcfg.nf*mcfg.bttln_exp)
+        self.g_layer1 = clayers.LayerScale(inp_ch=mcfg.nf*mcfg.bttln_exp, 
+                                           out_ch=mcfg.nf*mcfg.bttln_exp,
+                                           kernel=3)
+        self.g_layer2 = clayers.LayerScale(inp_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, 
+                                           out_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, 
+                                           kernel=3)
+        self.g_layer3 = clayers.LayerScale(inp_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio,
+                                           out_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, 
+                                           kernel=3)
+        self.g_layer4 = clayers.LayerScale(inp_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, 
+                                           out_ch=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, 
+                                           kernel=3)
 
         self.init_conv = clayers.InitConv(input_ch=mcfg.input_channel, mid_ch=mcfg.nf, out_ch=mcfg.nf*2)
         
@@ -143,18 +161,19 @@ class ResNet(nn.Module):
 
     def base_forward(self, x):
         x   = self.init_conv(x)
-        # x_g = self.gamma_layer1(x)
-        # x   = torch.add(x, x_g)
-
         x  = self.ds_conv(x)
         
-        c1   = self.layer1(x)
-        # c1_g = self.gamma_layer2(c1)
-        # c1   = torch.add(c1, c1_g)
-
-        c2 = self.layer2(c1)
-        c3 = self.layer3(c2)
-        c4 = self.layer4(c3)
+        c1 = self.layer1(x) # 144
+        c1 = self.g_layer1(c1)
+        
+        c2 = self.layer2(c1) # 288
+        c2 = self.g_layer2(c2)
+        
+        c3 = self.layer3(c2) # 576
+        c3 = self.g_layer3(c3)
+        
+        c4 = self.layer4(c3) # 864
+        c4 = self.g_layer4(c4)
 
         return c1, c2, c3, c4
 

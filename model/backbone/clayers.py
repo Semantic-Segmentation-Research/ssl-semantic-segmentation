@@ -30,15 +30,21 @@ class InitConv(nn.Module):
     
 # region - Layer Scale
 class LayerScale(nn.Module):
-    def __init__(self, mcfg, input_channel, gamma_channel, init_value=1e-6):
+    def __init__(self, inp_ch, out_ch, kernel, init_value=1e-6):
         super(LayerScale, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(input_channel, mcfg.nf*2, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(mcfg.nf*2),
+        
+        pad_val = (kernel - 1) // 2
+        
+        self.asy_conv = nn.Sequential(
+            nn.Conv2d(inp_ch, out_ch, kernel_size=(kernel, 1), stride=1, padding=(pad_val, 0), bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=(1, kernel), stride=1, padding=(0, pad_val), bias=False),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
-        self.gamma = nn.Parameter(init_value * torch.ones((1, gamma_channel, 1, 1)), requires_grad=True)
+        self.gamma = nn.Parameter(init_value * torch.ones((1, out_ch, 1, 1)), requires_grad=True)
         
         
     def forward(self, x):
-        return self.gamma * x
+        return x + self.gamma * self.asy_conv(x)

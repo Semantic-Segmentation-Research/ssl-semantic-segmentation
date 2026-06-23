@@ -19,13 +19,6 @@ class DeepLabV3Plus(nn.Module):
         self.mcfg = mcfg
 
         if not osp.exists(pretrained_path): pretrained_path = False
-            
-        # if 'resnet' in mcfg.backbone:
-        #     backbone = resnet.__dict__[mcfg.backbone]
-        #     self.backbone = backbone(pretrained_path, mcfg=mcfg)
-        # else:
-        #     assert mcfg.backbone == 'xception'
-        #     self.backbone = xception(True)
         
         backbone = resnet.__dict__[mcfg.backbone]
         self.backbone = backbone(pretrained_path, mcfg=mcfg)
