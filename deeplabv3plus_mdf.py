@@ -27,7 +27,7 @@ class DeepLabV3Plus(nn.Module):
             ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp *4,
+            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp + 36,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))
@@ -43,75 +43,71 @@ class DeepLabV3Plus(nn.Module):
         
         self.flow_layer = nn.Sequential(OrderedDict([
             ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
-                                #   reduc_ch=mcfg.bttln_exp,
-                                  reduc_ch=mcfg.nf,
+                                  reduc_ch=mcfg.bttln_exp,
                                   exp_ratio=4,
                                   method='mul')),
             ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
-                                #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
-                                  reduc_ch=mcfg.nf*mcfg.enc_c2_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
                                   exp_ratio=4,
                                   method='mul')),
             ("c3", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio,
-                                #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
-                                  reduc_ch=mcfg.nf*mcfg.enc_c3_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
                                   exp_ratio=4,
                                   method='mul')),
             ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
-                                #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
-                                  reduc_ch=mcfg.nf*mcfg.enc_c4_ratio,
+                                  reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                   exp_ratio=4,
                                   method='mul')
              )]))
         
-        # region aspp
         self.aspp_layer = nn.Sequential(OrderedDict([
             ("c14", context.ASPP(high_ch= mcfg.nf * mcfg.enc_c4_ratio * mcfg.bttln_exp,
-                                 low_ch=mcfg.nf * mcfg.enc_c2_ratio * mcfg.bttln_exp,
+                                 low_ch=36,
                                  dilations=mcfg.dilations,
-                                 ratio=mcfg.bttln_exp))
+                                 ratio=6))
             ]))
         
-        # region fuse
         self.fuse = nn.Sequential(OrderedDict([
             # (112, 112, 114)
-            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+            ("c1", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c1_ratio, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
                                  )),
             # (56, 56, 288)
-            ("c2", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+            ("c2", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio, 114, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(114),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
-                                 nn.Conv2d(mcfg.nf*mcfg.bttln_exp, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+                                 nn.Conv2d(114, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
                                  )),
             # (28, 28, 576)
-            ("c3", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+            ("c3", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
-                                 nn.Conv2d(mcfg.nf*mcfg.bttln_exp, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
                                  )),
             # (28, 28, 864)
-            ("c4", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+            ("c4", nn.Sequential(nn.Conv2d(mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio, 288, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(288),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
-                                 nn.Conv2d(mcfg.nf*mcfg.bttln_exp, mcfg.nf*mcfg.bttln_exp, 3, padding=1, bias=True),
-                                 nn.BatchNorm2d(mcfg.nf*mcfg.bttln_exp),
+                                 nn.Conv2d(288, 64, 3, padding=1, bias=True),
+                                 nn.BatchNorm2d(64),
                                  nn.ReLU(inplace=True),
                                  nn.Dropout2d(0.1),
                                  ))
         ]))
         
+        # self.cls = nn.Conv2d(64*4, mcfg.num_classes, 1, padding=0, bias=True)
+    
     
     # region update proto
     # 정답지(Label)를 보고 메모리 뱅크 업데이트
@@ -120,13 +116,13 @@ class DeepLabV3Plus(nn.Module):
         """
         Labeled 배치의 backbone 피처(c1~c4)와 GT label을 이용해
         각 FlowAtt 인스턴스의 class_prototypes를 EMA 방식으로 갱신.
-
+ 
         갱신 절차:
           1. 각 스케일의 피처를 xca.reduction 통과 → [B, reduc_ch, H', W']
           2. label을 해당 해상도로 nearest 리사이즈
           3. 클래스별 픽셀 피처 평균 계산
           4. class_prototypes[cls] = momentum * old + (1-momentum) * new_mean
-
+ 
         Args:
             c1~c4  : backbone 출력 피처 (Labeled 이미지 기준)
             label  : GT 세그멘테이션 레이블 [B, H, W]
@@ -138,23 +134,23 @@ class DeepLabV3Plus(nn.Module):
             (c3, self.flow_layer.c3),
             (c4, self.flow_layer.c4),
         ]
-
+ 
         for feat, layer in scales:
             b, c, h, w = feat.shape
-
+ 
             # 레이블을 피처 해상도에 맞게 리사이즈
             label_resized = F.interpolate(
                 label.unsqueeze(1).float(), size=(h, w), mode='nearest'
             ).squeeze(1).long()   # [B, H', W']
-
+ 
             # xca.reduction 통과 → [B, reduc_ch, H', W']
             feat_reduced = layer.xca.reduction(feat)
             reduc_ch = feat_reduced.shape[1]
-
+ 
             # 픽셀 방향으로 펼치기: [reduc_ch, B*H'*W']
             feat_flat  = feat_reduced.transpose(1, 0).contiguous().view(reduc_ch, -1)
             label_flat = label_resized.view(-1)  # [B*H'*W']
-
+ 
             for cls_idx in range(self.mcfg.num_classes):
                 mask = (label_flat == cls_idx)
                 if mask.sum() == 0: continue
@@ -183,33 +179,34 @@ class DeepLabV3Plus(nn.Module):
             c3_lw, c3_uw = c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[self.tcfg.batch_size:]
             c4_lw, c4_uw = c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[self.tcfg.batch_size:]
             
-            # ---------------- Unlabel Strong Part ----------------
-            # c1_us = self.flow_layer.c1(c1_lw, c1_us)
-            # c2_us = self.flow_layer.c2(c2_lw, c2_us)
-            # c3_us = self.flow_layer.c3(c3_lw, c3_us)
-            # c4_us = self.flow_layer.c4(c4_lw, c4_us)
-            c1_u = self.flow_layer.c1(torch.cat([c1_us, c1_uw], dim=0))
-            c2_u = self.flow_layer.c2(torch.cat([c2_us, c2_uw], dim=0))
-            c4_u = self.flow_layer.c4(torch.cat([c4_us, c4_uw], dim=0))
-            c3_u = self.flow_layer.c3(torch.cat([c3_us, c3_uw], dim=0))
-            
+            # ── Unlabeled (us + uw) → flow_layer 1회 호출 ──────────────────
+            # us와 uw를 scale별로 concat → flow_layer 통과 → split
+            # 효과: BN이 한 번만 업데이트되고, labeled 분포 오염 없음
+            # 의미: labeled 메모리 뱅크(class_prototypes)를 "읽어서" unlabeled 보정
+            c1_u  = self.flow_layer.c1(torch.cat([c1_us,  c1_uw],  dim=0))
+            c2_u  = self.flow_layer.c2(torch.cat([c2_us,  c2_uw],  dim=0))
+            c3_u  = self.flow_layer.c3(torch.cat([c3_us,  c3_uw],  dim=0))
+            c4_u  = self.flow_layer.c4(torch.cat([c4_us,  c4_uw],  dim=0))
+
+            # split: 앞 절반 = us, 뒤 절반 = uw
             c1_us, c1_uw = c1_u.chunk(2, dim=0)
             c2_us, c2_uw = c2_u.chunk(2, dim=0)
             c3_us, c3_uw = c3_u.chunk(2, dim=0)
             c4_us, c4_uw = c4_u.chunk(2, dim=0)
-            
-            c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            
-            feature = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
-            pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            result_dict['flow_mask_us'] = pred_mask
-            
-            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=pred_mask, aug_type='strong')
+
+            # ── Unlabeled Strong (us) → decoder_layer.strong ────────────────
+            c2_us = F.interpolate(c2_us, size=c1_us.shape[-2:], mode='bilinear', align_corners=True)
+            c3_us = F.interpolate(c3_us, size=c1_us.shape[-2:], mode='bilinear', align_corners=True)
+            c4_us = F.interpolate(c4_us, size=c1_us.shape[-2:], mode='bilinear', align_corners=True)
+
+            feature_us = torch.cat([c1_us, c2_us, c3_us, c4_us], dim=1)
+            pred_mask_us = self.decoder_layer.strong(feature_us, size=(image_height, image_width))
+            result_dict['flow_mask_us'] = pred_mask_us
+
+            result_corr = self.xca_layer.c4(enc_out=c4_us, dec_out=pred_mask_us, aug_type='strong')
             result_dict['corr_mask_us'] = result_corr["corr_dec_out"]
-            
-            # ---------------- Unlabel Weak Part ----------------
+
+            # ── Unlabeled Weak (uw) → decoder_layer.strong ──────────────────
             c2_uw = F.interpolate(c2_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
             c3_uw = F.interpolate(c3_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
             c4_uw = F.interpolate(c4_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
@@ -217,50 +214,42 @@ class DeepLabV3Plus(nn.Module):
             feature_uw = torch.cat([c1_uw, c2_uw, c3_uw, c4_uw], dim=1)
             pred_mask_uw_flow = self.decoder_layer.strong(feature_uw, size=(image_height, image_width))
             result_dict['flow_mask_uw'] = pred_mask_uw_flow
-            # ---------------------------------------------------------
-            
-            
-            
-            # ---------------- label+unlabel Weak Part ----------------
+
+            # ── Labeled + Unlabeled Weak → ASPP → decoder_layer.weak ────────
+            # labeled의 GT supervision 메인 경로.
+            # flow_layer를 거치지 않아 BN stats 오염 없음.
+            # 이 경로로 나온 pred_lw가 가장 강한 GT 신호를 받으며,
+            # update_prototypes()가 이 경로의 backbone feature로 메모리 뱅크를 갱신.
             c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
                 torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
                 torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
-                )
-            # c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
-            #     torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw)), axis=1),
-            #     c4_lw_uw + nn.Dropout2d(0.5)(c4_lw_uw)
-            #     )
-            
-            feature         = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
-            pred_masks      = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            )
+
+            feature    = torch.cat([c1_lw_uw_fp, c4_lw_uw_fp], dim=1)
+            pred_masks = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
             pred_mask, pred_mask_fp = pred_masks.chunk(2)
             result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=pred_mask, aug_type='weak')
-            
+
             result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
             result_dict['corr_mask_lw_uw']      = result_corr["corr_dec_out"]
             result_dict['mask_lw_uw_fp']        = pred_mask_fp
             result_dict['mask_lw_uw']           = pred_mask
-            # ---------------------------------------------------------
-            
-            # ----------------------- label Part -----------------------
-            c1_lw = self.fuse.c1(c1_lw)
-            c2_lw = self.fuse.c2(c2_lw)
-            c3_lw = self.fuse.c3(c3_lw)
-            c4_lw = self.fuse.c4(c4_lw)
-            
+
+            # ── Labeled (lw) → raw backbone → decoder_layer.strong ──────────
+            # flow_layer 없이 raw feature를 strong 헤드에 직접 연결.
+            # → decoder_layer.strong이 GT label로 직접 학습됨 (label_aux_loss)
+            # → val 경로(flow_layer → strong)와 헤드 가중치 공유
             c2_lw = F.interpolate(c2_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
-            
-            feature_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
-            # pred_mask = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
-            pred_mask = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
 
-            # result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=pred_mask, aug_type='strong')
-            # result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
-            result_dict['flow_mask_lw'] = pred_mask
-            # ---------------------------------------------------------
+            feature_lw = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
+            pred_mask_lw = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
+
+            result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=pred_mask_lw, aug_type='strong')
+            result_dict['corr_mask_lw']  = result_corr["corr_dec_out"]
+            result_dict['flow_mask_lw']  = pred_mask_lw
             
         elif mode == 'val':
             # c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
@@ -269,23 +258,19 @@ class DeepLabV3Plus(nn.Module):
 
             # result_dict['out'] = out
         
-            # c1_val = self.flow_layer.c1(c1)
-            # c2_val = self.flow_layer.c2(c2)
-            # c3_val = self.flow_layer.c3(c3)
-            # c4_val = self.flow_layer.c4(c4)
-            
-            c1_val = self.fuse.c1(c1)
-            c2_val = self.fuse.c2(c2)
-            c3_val = self.fuse.c3(c3)
-            c4_val = self.fuse.c4(c4)
-            
-            c2_val = F.interpolate(c2_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c3_val = F.interpolate(c3_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            c4_val = F.interpolate(c4_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
-            
+            # val: flow_layer 통과 (us/uw와 동일 경로, 헤드도 decoder_layer.strong 공유)
+            # c1은 flow_layer 후에도 해상도가 유지되므로 interpolate 불필요
+            c1_val = self.flow_layer.c1(c1)
+            c2_val = self.flow_layer.c2(c2)
+            c3_val = self.flow_layer.c3(c3)
+            c4_val = self.flow_layer.c4(c4)
+
+            c2_val = F.interpolate(c2_val, size=c1_val.shape[-2:], mode='bilinear', align_corners=True)
+            c3_val = F.interpolate(c3_val, size=c1_val.shape[-2:], mode='bilinear', align_corners=True)
+            c4_val = F.interpolate(c4_val, size=c1_val.shape[-2:], mode='bilinear', align_corners=True)
+
             feature = torch.cat([c1_val, c2_val, c3_val, c4_val], dim=1)
-            # out = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            out = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            out = self.decoder_layer.strong(feature, size=(image_height, image_width))
 
             result_dict['out'] = out
         

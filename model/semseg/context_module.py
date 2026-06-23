@@ -487,14 +487,15 @@ class FlowAtt(nn.Module):
 
 # region - ASPP
 class ASPP(nn.Module):
-    def __init__(self, high_ch, low_ch, dilations, ratio=8):
+    def __init__(self, high_ch, low_ch, dilations, ratio):
         super().__init__()
         
         self.aspp = ASPPModule(in_ch=high_ch, 
                                out_ch=high_ch // ratio, 
                                atrous_rates=dilations)
         
-        self.reduce = nn.Sequential(nn.Conv2d(high_ch // ratio, low_ch, 1, bias=False),
+        # self.reduce = nn.Sequential(nn.Conv2d(high_ch // ratio, low_ch, 1, bias=False),
+        self.expand = nn.Sequential(nn.Conv2d(144, low_ch, 1, bias=False),
                                     nn.BatchNorm2d(low_ch),
                                     nn.ReLU(True))
         
@@ -502,7 +503,8 @@ class ASPP(nn.Module):
         feat2 = self.aspp(feat2)
         feat2 = F.interpolate(feat2, size=feat1.shape[-2:], mode="bilinear", align_corners=True)
 
-        feat1 = self.reduce(feat1)
+        # feat1 = self.reduce(feat1)
+        feat1 = self.expand(feat1)
 
         return feat1, feat2
 
