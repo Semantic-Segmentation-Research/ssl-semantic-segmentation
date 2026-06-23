@@ -91,7 +91,8 @@ labels = [
 
 def compute_flops(tcfg, model, logger):
     model.eval()
-
+    model.cuda()
+    
     if isinstance(tcfg.crop_size, int):
         h, w = tcfg.crop_size, tcfg.crop_size
     else:
