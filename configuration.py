@@ -57,7 +57,8 @@ class TrainConfig:
     
     batch_size: int     = 4
     accumulation_steps: int = 4
-    lr: float           = 2e-4
+    # lr: float           = 2e-4
+    lr: float           = 5e-4
     lr_period: int      = 31 # accumulation_step 사용 시 lr_period는 1/accm
     
     
