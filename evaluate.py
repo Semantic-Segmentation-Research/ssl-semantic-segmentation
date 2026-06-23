@@ -28,20 +28,42 @@ def evaluate(tcfg, mcfg, rank, model, loader, mode):
             b, _, h, w = img.shape
             
             if mode == 'sliding_window':
+                # grid = tcfg.crop_size
+                # final = torch.zeros(b, 19, h, w).cuda()
+                # row = 0
+                # while row < h:
+                #     col = 0
+                #     while col < w:
+                #         res = model(img[:, :, row: min(h, row + grid), col: min(w, col + grid)])
+                #         pred = res['out']
+                #         final[:, :, row: min(h, row + grid), col: min(w, col + grid)] += pred.softmax(dim=1)
+                #         col += int(grid * 2 / 3)
+                #     row += int(grid * 2 / 3)
+
+                # pred = final.argmax(dim=1)
                 grid = tcfg.crop_size
                 final = torch.zeros(b, 19, h, w).cuda()
-                row = 0
-                while row < h:
-                    col = 0
-                    while col < w:
-                        res = model(img[:, :, row: min(h, row + grid), col: min(w, col + grid)])
-                        pred = res['out']
-                        final[:, :, row: min(h, row + grid), col: min(w, col + grid)] += pred.softmax(dim=1)
-                        col += int(grid * 2 / 3)
-                    row += int(grid * 2 / 3)
-
+                stride = int(grid * 2 / 3)
+                with torch.no_grad(), torch.autocast(device_type='cuda'):
+                    row = 0
+                    while row < h:
+                        col = 0
+                        while col < w:
+                            r1 = min(h, row + grid)
+                            c1 = min(w, col + grid)
+                            
+                            res = model(img[:, :, row:r1, col:c1], mode='val')
+                            # float32로 캐스팅 후 누적 (정확도 보존을 위해)
+                            pred = res['out'].float().softmax(dim=1) 
+                            
+                            final[:, :, row:r1, col:c1] += pred
+                            
+                            col += stride
+                        row += stride
+                        
                 pred = final.argmax(dim=1)
-
+                conf = final.softmax(dim=1).max(dim=1).values
+                
             else:
                 if mode == 'center_crop':
                     h, w = img.shape[-2:]

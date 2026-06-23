@@ -34,6 +34,7 @@ from einops import rearrange
 from configuration import DataConfig, TrainConfig, ModelConfig
 from losses import LossFactory
 from torch.optim.lr_scheduler import LambdaLR
+from thop import profile
 
 
 def init_seeds(seed=0, cuda_deterministic=False):
@@ -77,13 +78,63 @@ def main():
     rank, world_size = setup_distributed(port=tcfg.port)
     init_seeds(0, False)
 
-    model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
+    # model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
+    model = DeepLabV3Plus(tcfg, mcfg)
     for name, module in model.named_modules():
         if name.startswith('backbone') or name == '': continue  
         utils.init_non_backbone(module)
     
-    if rank == 0:
-        logger.info(f'Total params: {count_params(model):.1f}M\n')
+    logger.info(f'Total params: {count_params(model):.1f}M\n')
+    
+    # ===================================================================
+    # [FLOPs 계산 코드 추가 부분]
+    # 모델의 forward가 다중 인자(need_fp, use_corr 등)를 요구하므로,
+    # 더미 입력 텐서만 받는 단순한 Wrapper 클래스를 정의하여 계산합니다.
+    # ===================================================================
+    class WrapperModel(nn.Module):
+        def __init__(self, basemodel):
+            super().__init__()
+            self.model = basemodel
+
+        def forward(self, x):
+            # 추론(eval) 기준 연산량을 구하기 위해 False로 설정
+            return self.model(x, mode='val')
+
+    # 모델을 GPU로 올리고 평가 모드로 전환
+    wrapper_model = WrapperModel(model).cuda()
+    wrapper_model.eval()
+
+    # 설정 파일에서 이미지 크기(crop_size) 가져오기
+    if isinstance(tcfg.crop_size, int):
+        h, w = tcfg.crop_size, tcfg.crop_size
+    else:
+        h, w = tcfg.crop_size
+
+    # Batch Size 1, Channel 3(RGB), H, W 크기의 더미(Dummy) 데이터 생성
+    dummy_input = torch.randn(1, 3, h, w).cuda()
+
+    try:
+        # profile 함수로 MACs와 파라미터 계산 (verbose=False로 불필요한 출력 숨김)
+        # macs, params = profile(wrapper_model, inputs=(dummy_input, ), verbose=False)
+        flops, params = profile(model, inputs=(dummy_input, "val"))
+        
+        # 일반적으로 1 MAC(Multiply-Accumulate) = 2 FLOPs
+        # flops = macs * 2
+        
+        logger.info('================ Model Complexity ================')
+        logger.info(f"Input Shape : {dummy_input.shape}")
+        logger.info(f"FLOPs       : {flops / 1e9:.3f} GFLOPs")
+        # logger.info(f"MACs        : {macs / 1e9:.3f} GMACs")
+        logger.info(f"Parameters  : {params / 1e6:.3f} M")
+        logger.info('==================================================\n')
+    except Exception as e:
+        logger.error(f"FLOPs 계산 중 오류 발생: {e}")
+        
+    # 다시 학습을 위해 원래 모델을 훈련 모드로 복구
+    model.train()
+    # ===================================================================
+
+
 
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
@@ -224,13 +275,25 @@ def main():
             model.train()
             label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
             
+            with torch.no_grad():
+                m_core = model.module if hasattr(model, 'module') else model
+                
+                # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
+                c1_l, c2_l, c3_l, c4_l = m_core.backbone.base_forward(img_lw)
+                
+                # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
+                m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
+            
             with torch.amp.autocast('cuda'):
                 results = model(torch.cat((img_lw, img_uw, img_us)))
             
                 flow_mask_lw                = results['flow_mask_lw']
                 pred_lw, pred_uw            = results['mask_lw_uw'].split([label_batch, unlabel_batch])
                 pred_corr_lw, pred_corr_uw  = results['corr_mask_lw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
-                mask_uw_fp                  = results['mask_lw_uw_fp'][label_batch:]
+                # pred_uw_fp                  = results['mask_lw_uw_fp'][label_batch:]
+                pred_lw_fp, pred_uw_fp      = results['mask_lw_uw_fp'].split([label_batch, unlabel_batch])
+                
+                flow_mask_uw                = results['flow_mask_uw']
                 flow_mask_us                = results['flow_mask_us']
                 corr_mask_us                = results['corr_mask_us']
 
@@ -303,6 +366,10 @@ def main():
                                             ignore_index=tcfg.LossConfig.ignore_index,
                                             threshold=tcfg.LossConfig.ohem_threshold,
                                             min_kept=tcfg.LossConfig.ohem_min_kept)
+                label_fp_loss   = loss_ohem(pred_lw_fp, gt_lw, 
+                                            ignore_index=tcfg.LossConfig.ignore_index,
+                                            threshold=tcfg.LossConfig.ohem_threshold,
+                                            min_kept=tcfg.LossConfig.ohem_min_kept)
                 label_loss_corr = loss_ohem(pred_corr_lw, gt_lw, 
                                             ignore_index=tcfg.LossConfig.ignore_index,
                                             threshold=tcfg.LossConfig.ohem_threshold,
@@ -335,8 +402,9 @@ def main():
                 loss_u_corr = 0.5 * (loss_us_corr + loss_uw_corr)
                 
                 # 3번 수식
-                loss_u_kl = loss_kl(flow_mask_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
-                loss_uw_fp = loss_uw_cr(pred=mask_uw_fp, 
+                loss_us_kl = loss_kl(flow_mask_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+                loss_uw_kl = loss_kl(flow_mask_uw, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+                loss_uw_fp = loss_uw_cr(pred=pred_uw_fp, 
                                         true=pred_mask_uw, 
                                         confidence=pred_conf_uw, 
                                         threshold=thresh_global, 
@@ -345,14 +413,10 @@ def main():
                 
                 # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
                 # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
-                sum_label_loss = label_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
-                sum_unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
+                # sum_unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
+                sum_label_loss = label_loss + label_fp_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
+                sum_unlabel_loss = 0.5 * loss_us + 0.25 * (loss_us_kl + loss_uw_kl) + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
                 
-                # weight_unlabel = torch.exp(torch.tensor(epoch - tcfg.lr_period, dtype=torch.float32))
-                # weight_unlabel = torch.clip(weight_unlabel, 0., 1.)
-                # weight_label = 2 - 0.5 * weight_unlabel
-
-                # loss = weight_label * label_loss + weight_unlabel * unlabel_loss
                 loss = sum_label_loss + sum_unlabel_loss
 
             optimizer.zero_grad()
@@ -371,7 +435,7 @@ def main():
             total_dice_loss.update(label_dice_loss.detach())
             
             total_loss_s.update(loss_us.detach())
-            total_loss_kl.update(loss_u_kl.detach())
+            total_loss_kl.update(loss_us_kl.detach())
             total_loss_w_fp.update(loss_uw_fp.detach())
             total_loss_corr_u.update(loss_u_corr.detach())
             total_mask_ratio += ((pred_conf_uw >= thresh_global) & (ignore_mask != 255)).sum().item() / \

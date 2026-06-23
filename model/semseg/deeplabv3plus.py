@@ -27,7 +27,7 @@ class DeepLabV3Plus(nn.Module):
             ('strong', context.SegHead(in_ch= mcfg.nf*mcfg.bttln_exp*(mcfg.enc_c1_ratio+mcfg.enc_c2_ratio+mcfg.enc_c3_ratio+mcfg.enc_c4_ratio),
                                        mid_ch=256,
                                        out_ch=mcfg.num_classes)),
-            ('weak', context.SegHead(in_ch= 36 + mcfg.nf * mcfg.bttln_exp,
+            ('weak', context.SegHead(in_ch= mcfg.nf * mcfg.bttln_exp + 36,
                                      mid_ch=256,
                                      out_ch=mcfg.num_classes))
         ]))
@@ -44,16 +44,20 @@ class DeepLabV3Plus(nn.Module):
         self.flow_layer = nn.Sequential(OrderedDict([
             ("c1", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp,
                                   reduc_ch=mcfg.bttln_exp,
-                                  exp_ratio=4)),
+                                  exp_ratio=4,
+                                  method='mul')),
             ("c2", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c2_ratio,
                                   reduc_ch=mcfg.bttln_exp*mcfg.enc_c2_ratio,
-                                  exp_ratio=4)),
+                                  exp_ratio=4,
+                                  method='mul')),
             ("c3", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c3_ratio,
                                   reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
-                                  exp_ratio=4)),
+                                  exp_ratio=4,
+                                  method='mul')),
             ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                   reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
-                                  exp_ratio=4)
+                                  exp_ratio=4,
+                                  method='mul')
              )]))
         
         self.aspp_layer = nn.Sequential(OrderedDict([
@@ -102,8 +106,62 @@ class DeepLabV3Plus(nn.Module):
                                  ))
         ]))
         
-        self.cls = nn.Conv2d(64*4, mcfg.num_classes, 1, padding=0, bias=True)
-        
+        # self.cls = nn.Conv2d(64*4, mcfg.num_classes, 1, padding=0, bias=True)
+    
+    
+    # region update proto
+    # 정답지(Label)를 보고 메모리 뱅크 업데이트
+    @torch.no_grad()
+    def update_prototypes(self, c1, c2, c3, c4, label, momentum=0.99):
+        """
+        Labeled 배치의 backbone 피처(c1~c4)와 GT label을 이용해
+        각 FlowAtt 인스턴스의 class_prototypes를 EMA 방식으로 갱신.
+ 
+        갱신 절차:
+          1. 각 스케일의 피처를 xca.reduction 통과 → [B, reduc_ch, H', W']
+          2. label을 해당 해상도로 nearest 리사이즈
+          3. 클래스별 픽셀 피처 평균 계산
+          4. class_prototypes[cls] = momentum * old + (1-momentum) * new_mean
+ 
+        Args:
+            c1~c4  : backbone 출력 피처 (Labeled 이미지 기준)
+            label  : GT 세그멘테이션 레이블 [B, H, W]
+            momentum: EMA 갱신 계수 (기본 0.99)
+        """
+        scales = [
+            (c1, self.flow_layer.c1),
+            (c2, self.flow_layer.c2),
+            (c3, self.flow_layer.c3),
+            (c4, self.flow_layer.c4),
+        ]
+ 
+        for feat, layer in scales:
+            b, c, h, w = feat.shape
+ 
+            # 레이블을 피처 해상도에 맞게 리사이즈
+            label_resized = F.interpolate(
+                label.unsqueeze(1).float(), size=(h, w), mode='nearest'
+            ).squeeze(1).long()   # [B, H', W']
+ 
+            # xca.reduction 통과 → [B, reduc_ch, H', W']
+            feat_reduced = layer.xca.reduction(feat)
+            reduc_ch = feat_reduced.shape[1]
+ 
+            # 픽셀 방향으로 펼치기: [reduc_ch, B*H'*W']
+            feat_flat  = feat_reduced.transpose(1, 0).contiguous().view(reduc_ch, -1)
+            label_flat = label_resized.view(-1)  # [B*H'*W']
+ 
+            for cls_idx in range(self.mcfg.num_classes):
+                mask = (label_flat == cls_idx)
+                if mask.sum() == 0: continue
+                
+                # 해당 클래스 픽셀 피처 평균 [reduc_ch]
+                cls_mean = feat_flat[:, mask].mean(dim=1)
+                
+                # EMA 갱신
+                layer.class_prototypes[cls_idx] = (momentum * layer.class_prototypes[cls_idx] + (1 - momentum) * cls_mean)
+                
+                
     # region forward
     def forward(self, x, mode='train'):
         result_dict = {}
@@ -116,13 +174,21 @@ class DeepLabV3Plus(nn.Module):
             c3_lw_uw, c3_us = torch.split(c3, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             c4_lw_uw, c4_us = torch.split(c4, [self.tcfg.batch_size*2, self.tcfg.batch_size], dim=0)
             
-            # ---------------- Unlabel Strong Part ----------------
-            c1_us = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_us)
-            c2_us = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_us)
-            c3_us = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_us)
-            c4_us = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_us)
+            c1_lw, c1_uw = c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[self.tcfg.batch_size:]
+            c2_lw, c2_uw = c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[self.tcfg.batch_size:]
+            c3_lw, c3_uw = c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[self.tcfg.batch_size:]
+            c4_lw, c4_uw = c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[self.tcfg.batch_size:]
             
-            c1_us = F.interpolate(c1_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            # ---------------- Unlabel Strong Part ----------------
+            # c1_us = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_us)
+            # c2_us = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_us)
+            # c3_us = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_us)
+            # c4_us = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_us)
+            c1_us = self.flow_layer.c1(c1_us)
+            c2_us = self.flow_layer.c2(c2_us)
+            c3_us = self.flow_layer.c3(c3_us)
+            c4_us = self.flow_layer.c4(c4_us)
+            
             c2_us = F.interpolate(c2_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c3_us = F.interpolate(c3_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c4_us = F.interpolate(c4_us, size=c1.shape[-2:], mode='bilinear', align_corners=True)
@@ -136,6 +202,19 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ---------------- label+unlabel Weak Part ----------------
+            c1_uw = self.flow_layer.c1(c1_uw)
+            c2_uw = self.flow_layer.c2(c2_uw)
+            c3_uw = self.flow_layer.c3(c3_uw)
+            c4_uw = self.flow_layer.c4(c4_uw)
+            
+            c2_uw = F.interpolate(c2_uw, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c3_uw = F.interpolate(c3_uw, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c4_uw = F.interpolate(c4_uw, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            
+            feature = torch.cat([c1_uw, c2_uw, c3_uw, c4_uw], dim=1)
+            pred_mask_uw = self.decoder_layer.strong(feature, size=(image_height, image_width))
+            result_dict['flow_mask_uw'] = pred_mask_uw
+            
             c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
                 torch.cat((c1_lw_uw, nn.Dropout2d(0.5)(c1_lw_uw))),
                 torch.cat((c4_lw_uw, nn.Dropout2d(0.5)(c4_lw_uw)))
@@ -154,31 +233,51 @@ class DeepLabV3Plus(nn.Module):
             # ---------------------------------------------------------
             
             # ----------------------- label Part -----------------------
-            c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
-            c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
-            c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
-            c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            # c1_lw = self.flow_layer.c1(c1_lw_uw[:self.tcfg.batch_size], c1_lw_uw[:self.tcfg.batch_size])
+            # c2_lw = self.flow_layer.c2(c2_lw_uw[:self.tcfg.batch_size], c2_lw_uw[:self.tcfg.batch_size])
+            # c3_lw = self.flow_layer.c3(c3_lw_uw[:self.tcfg.batch_size], c3_lw_uw[:self.tcfg.batch_size])
+            # c4_lw = self.flow_layer.c4(c4_lw_uw[:self.tcfg.batch_size], c4_lw_uw[:self.tcfg.batch_size])
+            c1_lw = self.flow_layer.c1(c1_lw)
+            c2_lw = self.flow_layer.c2(c2_lw)
+            c3_lw = self.flow_layer.c3(c3_lw)
+            c4_lw = self.flow_layer.c4(c4_lw)
             
-            c1_lw = self.fuse.c1(c1_lw)
-            c2_lw = self.fuse.c2(c2_lw)
-            c3_lw = self.fuse.c3(c3_lw)
-            c4_lw = self.fuse.c4(c4_lw)
+            # c1_lw = self.fuse.c1(c1_lw)
+            # c2_lw = self.fuse.c2(c2_lw)
+            # c3_lw = self.fuse.c3(c3_lw)
+            # c4_lw = self.fuse.c4(c4_lw)
             
             c2_lw = F.interpolate(c2_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c3_lw = F.interpolate(c3_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             c4_lw = F.interpolate(c4_lw, size=c1_lw.shape[-2:], mode='bilinear', align_corners=True)
             
             feature = torch.cat([c1_lw, c2_lw, c3_lw, c4_lw], dim=1)
-            feature = self.cls(feature)
-            pred_mask = F.interpolate(feature, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            # feature = self.cls(feature)
+            # pred_mask = F.interpolate(feature, size=(image_height, image_width), mode='bilinear', align_corners=True)
+            pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
             
             result_dict['flow_mask_lw'] = pred_mask
             # ---------------------------------------------------------
             
         elif mode == 'val':
-            c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
-            feature         = torch.cat([c1_us, c4_us], dim=1)
-            out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            # c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
+            # feature         = torch.cat([c1_us, c4_us], dim=1)
+            # out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+
+            # result_dict['out'] = out
+        
+            c1_val = self.flow_layer.c1(c1)
+            c2_val = self.flow_layer.c2(c2)
+            c3_val = self.flow_layer.c3(c3)
+            c4_val = self.flow_layer.c4(c4)
+            
+            c1_val = F.interpolate(c1_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c2_val = F.interpolate(c2_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c3_val = F.interpolate(c3_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            c4_val = F.interpolate(c4_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
+            
+            feature = torch.cat([c1_val, c2_val, c3_val, c4_val], dim=1)
+            out = self.decoder_layer.strong(feature, size=(image_height, image_width))
 
             result_dict['out'] = out
         
