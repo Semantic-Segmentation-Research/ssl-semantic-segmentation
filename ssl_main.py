@@ -74,7 +74,6 @@ def main():
     logger = init_log('global', logging.INFO)
     logger.propagate = 0
 
-    # rank, world_size = setup_distributed(port=tcfg.port)
     init_seeds(0, False)
 
     # model = DeepLabV3Plus(tcfg, mcfg, pretrained_path=osp.join(tcfg.pretrained_path, mcfg.backbone+'.pth'))
@@ -90,9 +89,6 @@ def main():
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
     model.to(device)
     
-    # if world_size > 1:
-    #     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
-
     losses = LossFactory()
     # loss_ce     = losses.label(mode='ce', device=device)
     loss_ohem   = losses.label(mode='ohem', device=device)
