@@ -129,7 +129,7 @@ class DeepLabV3Plus(nn.Module):
         Args:
             c1~c4  : backbone 출력 피처 (Labeled 이미지 기준)
             label  : GT 세그멘테이션 레이블 [B, H, W]
-            momentum: EMA 갱신 계수 (기본 0.6)
+            momentum: EMA 갱신 계수 (기본 0.999) #TODO: epoch에 따른 값 변화(0.999 ->0.5)
         """
         scales = [
             (c1, self.flow_layer.c1),
@@ -146,8 +146,8 @@ class DeepLabV3Plus(nn.Module):
                 label.unsqueeze(1).float(), size=(h, w), mode='nearest'
             ).squeeze(1).long()   # [B, H', W']
 
-            # xca.reduction 통과 → [B, reduc_ch, H', W']
-            feat_reduced = layer.xca.reduction(feat)
+            # protoAttn.reduction 통과 → [B, reduc_ch, H', W']
+            feat_reduced = layer.protoAttn.reduction(feat)
             reduc_ch = feat_reduced.shape[1]
 
             # 픽셀 방향으로 펼치기: [reduc_ch, B*H'*W']

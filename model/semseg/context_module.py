@@ -210,7 +210,7 @@ class PrototypeAttention(nn.Module):
 
     def forward(self, feat, prototypes):
         """
-        feat       : [B, C,  H, W]
+        feat       : [B, C,  H, W], Unlabel
         prototypes : [num_classes, C']  (FlowAtt.class_prototypes 버퍼)
         returns    : [B, C,  H, W]  (feat + attention-refined residual)
         """
@@ -280,10 +280,10 @@ class FlowAtt(nn.Module):
 
         # ── 메모리 뱅크: [num_classes, reduc_ch] ──────────────────────────────
         # 역전파로 갱신되지 않으며, update_prototypes()에서 EMA 방식으로만 갱신됨
-        self.register_buffer("class_prototypes", torch.ones(num_classes, reduc_ch))
+        self.register_buffer("class_prototypes", torch.zeros(num_classes, reduc_ch))
 
         # ── PrototypeAttention (Cross-Attention w/ Memory Bank) ───────────────
-        self.xca = PrototypeAttention(in_ch=channel, out_ch=reduc_ch, num_classes=num_classes)
+        self.protoAttn = PrototypeAttention(in_ch=channel, out_ch=reduc_ch, num_classes=num_classes)
 
         # ── StarNet (Asymmetric Depthwise Star Operation) ─────────────────────
         self.star_layer = nn.Sequential(OrderedDict([
@@ -323,7 +323,7 @@ class FlowAtt(nn.Module):
         2) star: asymmetric star op → residual 추가
         """
         # 1. Memory Bank Cross-Attention
-        feat_att = self.xca(feat, self.class_prototypes)
+        feat_att = self.protoAttn(feat, self.class_prototypes)
 
         # 2. StarNet
         x = self.star_layer.reduction(feat_att)

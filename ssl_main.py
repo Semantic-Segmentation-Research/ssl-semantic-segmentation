@@ -8,7 +8,6 @@ import numpy as np
 import torch
 from torch import nn
 from torchmetrics import MeanMetric
-import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torch.optim import SGD, Adam
 from torch.utils.data import DataLoader
@@ -22,7 +21,6 @@ from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
 import util.utils as utils
 from util.utils import count_params, init_log
-from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
 
@@ -260,7 +258,7 @@ def main():
     step_in_epoch = 0
     
     # region - Train
-    scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
+    # scaler = torch.amp.GradScaler('cuda', init_scale=1024.)
     for epoch in range(start_epoch, tcfg.num_epochs):
         # ------------------------------------------
         # label
@@ -312,6 +310,7 @@ def main():
             
             # if epoch > 1:
             with torch.no_grad(), torch.amp.autocast('cuda'):
+            # with torch.no_grad():
                 m_core = model.module if hasattr(model, 'module') else model
                 
                 # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
@@ -471,22 +470,24 @@ def main():
             full_loss = total_label_loss + total_unlabel_loss
 
 
-            scaler.scale(full_loss / tcfg.accumulation_steps).backward()
+            # scaler.scale(full_loss / tcfg.accumulation_steps).backward()
+            (full_loss / tcfg.accumulation_steps).backward()
             accum_counter += 1
-            # scaler.unscale_(optimizer)
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             iters = epoch * len(unlabel_train_loader) + step
             if accum_counter == tcfg.accumulation_steps:
-                scale_before = scaler.get_scale()
+                # scale_before = scaler.get_scale()
                 
-                scaler.step(optimizer)
-                scaler.update()
-                
+                # scaler.unscale_(optimizer)
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                # scaler.step(optimizer)
+                # scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
-                scale_after = scaler.get_scale()
-                if scale_before <= scale_after:
-                    scheduler.step()
+                scheduler.step()
+                # scale_after = scaler.get_scale()
+                # if scale_before <= scale_after:
+                #     scheduler.step()
                 
                 iters = epoch * len(unlabel_train_loader) + step_in_epoch
                 # # power = tcfg.unlabel_lr_decay if epoch >= tcfg.lr_period else tcfg.label_lr_decay
@@ -559,16 +560,18 @@ def main():
             
             
         if accum_counter > 0:
-            scale_before = scaler.get_scale()
+            # scale_before = scaler.get_scale()
             
-            scaler.step(optimizer)
-            scaler.update()
+            # scaler.step(optimizer)
+            # scaler.update()
             
+            # optimizer.zero_grad()
+            # scale_after = scaler.get_scale()
+            # if scale_before <= scale_after:
+            #     scheduler.step()
+            optimizer.step()
             optimizer.zero_grad()
-            scale_after = scaler.get_scale()
-            if scale_before <= scale_after:
-                scheduler.step()
-            
+            scheduler.step()
             accum_counter = 0
             
         
