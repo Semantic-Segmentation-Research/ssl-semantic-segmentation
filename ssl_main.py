@@ -555,7 +555,13 @@ def main():
             optimizer.zero_grad()
             accum_counter = 0
             
-    
+        
+        pbar.close()
+        line_sep.close()
+        line_hyper.close()
+        line_label.close()
+        line_unlabel.close()
+        
         # region step 끝
         torch.cuda.empty_cache()
         res_val = evaluate(tcfg, mcfg, model, validation_loader, mode=tcfg.eval_mode)

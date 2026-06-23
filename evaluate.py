@@ -15,9 +15,11 @@ def evaluate(tcfg, mcfg, model, loader, mode):
     union_meter = AverageMeter()
 
     # print("📊 Start evaluation...")
-    pbar = tqdm(loader, desc="📊 Start evaluation...", total=len(loader), position=5)
+    pbar = tqdm(loader, desc="📊 Start Evaluation...", total=len(loader), position=5)
     with torch.no_grad(), torch.amp.autocast('cuda'):
-        for img, mask, image_path in pbar:
+        for step, (img, mask, image_path) in enumerate(pbar):
+            if step == 1: break
+            
             img = img.cuda(non_blocking=True)
             b, _, h, w = img.shape
             
@@ -93,15 +95,32 @@ def evaluate(tcfg, mcfg, model, loader, mode):
     return_dict['img'] = img
     return_dict['mask'] = mask
     return_dict['image_path'] = image_path
+    
+    # tqdm.write(f' Evaluation: {tcfg.eval_mode}  >>>> meanIOU: {mIOU:.4f} \n')
+    
+    # items = list(iou_class_dict.items())
+    # items_per_line = 4 # 한 줄에 출력할 클래스 개수
 
-    # logger.info(f'***** Evaluation: {tcfg.eval_mode} ***** >>>> meanIOU: {res_val["mIOU"]:.4f} \n')
-    tqdm.write(f'***** Evaluation: {tcfg.eval_mode} ***** >>>> meanIOU: {mIOU:.4f} \n')
-    # summary = " | ".join(f"[{k}:{v:.2f}%]" for k, v in iou_class_dict.items())
-    # print(f"[Class IoU]: {summary} \n")
+    # # 1. 출력할 내용을 하나의 텍스트 변수(summary_text)에 계속 더해서 조립합니다.
+    # summary_text = "=" * 65 + "\n"
+    # summary_text += "📊 [Class IoU Summary]\n"
+    # summary_text += "-" * 65 + "\n"
+
+    # for i in range(0, len(items), items_per_line):
+    #     chunk = items[i:i+items_per_line]
+    #     row = " | ".join(f"{k:<12}: {v:>5.2f}%" for k, v in chunk)
+    #     summary_text += row + "\n"  # 각 줄마다 엔터(\n) 추가
+
+    # summary_text += "=" * 65
+
+    # # 2. 조립이 끝난 거대한 문자열을 딱 한 번만 출력합니다.
+    # tqdm.write(summary_text)
+    
     items = list(iou_class_dict.items())
     items_per_line = 4 # 한 줄에 출력할 클래스 개수
 
     tqdm.write("=" * 65)
+    tqdm.write(f"Mode: {tcfg.eval_mode} >>>> meanIOU: {mIOU:.4f} \n")
     tqdm.write("📊 [Class IoU Summary]")
     tqdm.write("-" * 65)
 
