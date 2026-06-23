@@ -56,12 +56,12 @@ class DeepLabV3Plus(nn.Module):
                                 #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c3_ratio,
                                   reduc_ch=mcfg.nf*mcfg.enc_c3_ratio,
                                   exp_ratio=4,
-                                  method='mul')),
+                                  method='sum')),
             ("c4", context.FlowAtt(channel=mcfg.nf*mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                 #   reduc_ch=mcfg.bttln_exp*mcfg.enc_c4_ratio,
                                   reduc_ch=mcfg.nf*mcfg.enc_c4_ratio,
                                   exp_ratio=4,
-                                  method='mul')
+                                  method='sum')
              )]))
         
         # region aspp

@@ -124,9 +124,9 @@ class CrossCovarianceAtt(nn.Module):
         attn = torch.bmm(q, k.transpose(1, 2))
         # attn /= self.temperature
         # attn = F.softmax(attn, dim=-1)
+        attn = attn / math.sqrt(q.shape[-1])
+        attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         attn = F.softmax(attn.float(), dim=-1).type_as(attn)
-        # attn = attn / math.sqrt(q.shape[-1])
-        # attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6)
         xca = torch.bmm(attn, v)
 
         # xca = F.softmax(xca, dim=1)
@@ -226,8 +226,8 @@ class PrototypeAttention(nn.Module):
         k = self.k_proj(proto)
         v = self.v_proj(proto)
 
-        # q_norm = q / F.normalize(q, p=2, dim=-1).clamp_min(1e-6)
-        # k_norm = k / F.normalize(k, p=2, dim=-1).clamp_min(1e-6)
+        # q_norm = q / F.normalize(q, p=2, dim=1).clamp_min(1e-6)
+        # k_norm = k / F.normalize(k, p=2, dim=1).clamp_min(1e-6)
         q_norm = F.normalize(q, p=2, dim=-1)
         k_norm = F.normalize(k, p=2, dim=-1)
 
@@ -237,11 +237,11 @@ class PrototypeAttention(nn.Module):
         attn = torch.bmm(q_norm, k_norm.transpose(1, 2))
         attn = attn / math.sqrt(q_norm.shape[-1])
         attn = torch.nan_to_num(attn, nan=0.0, posinf=1e6, neginf=-1e6) # 방어코드
-        attn = F.softmax(attn, dim=-1)
+        attn = F.softmax(attn.float(), dim=-1).type_as(attn)
 
         # [B, H*W, 19] × [B, 19, C'] → [B, H*W, C'] → [B, C', H, W]
         out = torch.bmm(attn, v).transpose(1, 2).view(b, -1, h, w)
-        out = self.proj(out)                              # [B, C, H, W]
+        out = self.proj(out)  # [B, C, H, W]
 
         return feat + self.gamma * out
 
