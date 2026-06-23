@@ -190,8 +190,7 @@ class PrototypeAttention(nn.Module):
         self.num_classes = num_classes
 
         self.reduction = nn.Sequential(
-            # nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, dilation=5, padding=5, bias=False),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )

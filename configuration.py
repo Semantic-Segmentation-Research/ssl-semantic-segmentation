@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.6.4_LTU" 
+    model_name: str     = "flowAtt_v1.6.5"
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -62,12 +62,13 @@ class TrainConfig:
     lr_period: int      = 31 # accumulation_step 사용 시 lr_period는 1/accm
     
     
-    num_epochs: int     = 240
+    num_epochs: int     = 800
     num_workers: int    = 8
     
     crop_size: int      = 448
     
     decay_power: float  = 0.9
+
     lr_multi: float     = 1.0
     label_lr_decay: float   = 0.5
     unlabel_lr_decay: float = 0.9
