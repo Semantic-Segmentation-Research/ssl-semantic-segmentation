@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "flowAtt_v1.6.8" 
+    model_name: str     = "flowAtt_v1.6.9" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -67,7 +67,7 @@ class TrainConfig:
     
     crop_size: int      = 448
     
-    decay_power: float  = 0.8
+    decay_power: float  = 0.5
     lr_multi: float     = 1.0
     label_lr_decay: float   = 0.5
     unlabel_lr_decay: float = 0.9
