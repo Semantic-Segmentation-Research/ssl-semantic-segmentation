@@ -310,15 +310,15 @@ def main():
             label_batch, unlabel_batch = img_lw.shape[0], img_uw.shape[0]
 
             
-            if epoch > 1:
-                with torch.no_grad(), torch.amp.autocast('cuda'):
-                    m_core = model.module if hasattr(model, 'module') else model
-                    
-                    # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
-                    c1_l, c2_l, c3_l, c4_l = m_core.backbone.base_forward(img_lw)
-                    
-                    # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
-                    m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
+            # if epoch > 1:
+            with torch.no_grad(), torch.amp.autocast('cuda'):
+                m_core = model.module if hasattr(model, 'module') else model
+                
+                # 1. Labeled 이미지(img_lw)만 백본에 통과시켜 깨끗한 피처 추출
+                c1_l, c2_l, c3_l, c4_l = m_core.backbone.base_forward(img_lw)
+                
+                # 2. 추출된 피처와 정답(gt_lw)을 이용해 19개 클래스 메모리 뱅크 갱신 (선생님의 지식 축적)
+                m_core.update_prototypes(c1_l, c2_l, c3_l, c4_l, gt_lw)
             
             
             with torch.amp.autocast('cuda'):
@@ -420,14 +420,15 @@ def main():
                                         threshold=tcfg.LossConfig.ohem_threshold,
                                         min_kept=tcfg.LossConfig.ohem_min_kept)
             
-            label_dice_loss      = loss_dice(pred_lw, gt_lw)
-            lw_corr_dice_loss    = loss_dice(pred_corr_lw, gt_lw)
-            label_flow_dice_loss = loss_dice(flow_mask_lw, gt_lw)
+            # label_dice_loss      = loss_dice(pred_lw, gt_lw)
+            # lw_corr_dice_loss    = loss_dice(pred_corr_lw, gt_lw)
+            # label_flow_dice_loss = loss_dice(flow_mask_lw, gt_lw)
             
             
             ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.9*label_flow_loss
-            dice_loss = (label_dice_loss + lw_corr_dice_loss)
-            total_label_loss = ohem_loss + dice_loss
+            # dice_loss = (label_dice_loss + lw_corr_dice_loss)
+            # total_label_loss = ohem_loss + dice_loss
+            total_label_loss = ohem_loss
             
             # --------------------------------------------------------------------
             # unlabel part
@@ -448,7 +449,7 @@ def main():
                                     threshold=thresh_global,
                                     ignore_mask=ignore_mask)
             # 3번 수식
-            u_flow_kl   = loss_kl(flow_mask_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
+            # u_flow_kl   = loss_kl(flow_mask_us, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
             uw_flow_kl  = loss_kl(flow_mask_uw, pred_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
             uw_fp_cr    = loss_uw_cr(pred=pred_uw_fp, 
                                     true=pred_mask_uw, 
@@ -464,7 +465,8 @@ def main():
             # ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.5 * label_loss_corr2 + tcfg.LossConfig.aux_loss_weight * label_flow_loss + 5 * label_dice_loss
             
             loss_u_corr = 0.5 * (us_corr_loss + uw_corr_loss)
-            total_unlabel_loss = us_flow_loss + loss_u_corr + 0.25 * (u_flow_kl + uw_flow_kl) + 0.25 * uw_fp_cr
+            # total_unlabel_loss = us_flow_loss + loss_u_corr + 0.25 * (u_flow_kl + uw_flow_kl) + 0.25 * uw_fp_cr
+            total_unlabel_loss = 0.5 * us_flow_loss + loss_u_corr + 0.25 * uw_flow_kl + 0.25 * uw_fp_cr
             
             full_loss = total_label_loss + total_unlabel_loss
 
@@ -506,9 +508,9 @@ def main():
             label_fp_metrics.update(label_fp_loss.detach())
             label_corr_metrics.update(label_loss_corr.detach())
             label_flow_metrics.update(label_flow_loss.detach())
-            label_dice_metrics.update(label_dice_loss.detach())
-            label_corr_dice_metrics.update(lw_corr_dice_loss.detach())
-            label_flow_dice_metrics.update(label_flow_dice_loss.detach())
+            # label_dice_metrics.update(label_dice_loss.detach())
+            # label_corr_dice_metrics.update(lw_corr_dice_loss.detach())
+            # label_flow_dice_metrics.update(label_flow_dice_loss.detach())
             total_label_metrics.update(total_label_loss.detach())
             
             # --------------------------------------------------------------------
@@ -517,7 +519,7 @@ def main():
             us_flow_metrics.update(us_flow_loss.detach())
             us_corr_metrics.update(us_corr_loss.detach())
             uw_corr_metrics.update(uw_corr_loss.detach())
-            u_flow_metrics.update(u_flow_kl.detach())
+            # u_flow_metrics.update(u_flow_kl.detach())
             uw_flow_metrics.update(uw_flow_kl.detach())
             uw_fp_metrics.update(uw_fp_cr.detach())
             total_unlabel_metrics.update(total_unlabel_loss.detach())
@@ -537,11 +539,14 @@ def main():
             if step % 10 == 0:
                 hyperparam = f"Model: [{tcfg.model_name:>5}] | Time Left: [{time_left:>5}] | Epoch: [{epoch:>3}/{tcfg.num_epochs:>5}] | Step: [{step}/{len(unlabel_train_loader):>5}] | Elapsed time: {elapsed_time:.2f}s"
                 label_loss_info = f"Full: {full_metrics.compute():.3f}, 🏷️ Total Label: {total_label_metrics.compute():.3f}, Label fp: {label_fp_metrics.compute():.3f}, " \
-                                  f"🏷️ Flow Label: {label_flow_metrics.compute():.3f}, Dice Label: {label_dice_metrics.compute():.3f}, 🏷️ Corr Dice Label: {label_corr_dice_metrics.compute():.3f}, " \
-                                  f"🏷️ Flow Dice Label:{label_flow_dice_metrics.compute():.3f}"
+                                  f"🏷️ Flow Label: {label_flow_metrics.compute():.3f} " \
                 
+                # unlabel_loss_info = f"Total UnLabel: {total_unlabel_metrics.compute():.3f}, 🏷️ Flow US: {us_flow_metrics.compute():.3f}, Corr US: {us_corr_metrics.compute():.3f}, " \
+                #                     f"Corr UW: {uw_corr_metrics.compute():.3f}, 🏷️ Flow U: {u_flow_metrics.compute():.3f}, 🏷️ Flow UW: {uw_flow_metrics.compute():.3f}, " \
+                #                     f"UW FP: {uw_fp_metrics.compute():.3f}, " \
+                #                     f"Mask: {total_mask_ratio/(step+1):.3f}"
                 unlabel_loss_info = f"Total UnLabel: {total_unlabel_metrics.compute():.3f}, 🏷️ Flow US: {us_flow_metrics.compute():.3f}, Corr US: {us_corr_metrics.compute():.3f}, " \
-                                    f"Corr UW: {uw_corr_metrics.compute():.3f}, 🏷️ Flow U: {u_flow_metrics.compute():.3f}, 🏷️ Flow UW: {uw_flow_metrics.compute():.3f}, " \
+                                    f"Corr UW: {uw_corr_metrics.compute():.3f}, 🏷️ Flow UW: {uw_flow_metrics.compute():.3f}, " \
                                     f"UW FP: {uw_fp_metrics.compute():.3f}, " \
                                     f"Mask: {total_mask_ratio/(step+1):.3f}"
                 
@@ -582,15 +587,15 @@ def main():
                                           "Label/Total Loss": total_label_metrics.compute(),
                                           "Label/FP Loss": label_fp_metrics.compute(), 
                                           "Label/Flow Loss": label_flow_metrics.compute(), 
-                                          "Label/Dice Loss": label_dice_metrics.compute(), 
-                                          "Label/Corr Dice Loss": label_corr_dice_metrics.compute(), 
-                                          "Label/Flow Dice Loss": label_flow_dice_metrics.compute(), 
+                                        #   "Label/Dice Loss": label_dice_metrics.compute(), 
+                                        #   "Label/Corr Dice Loss": label_corr_dice_metrics.compute(), 
+                                        #   "Label/Flow Dice Loss": label_flow_dice_metrics.compute(), 
                                           
                                           "UnLabel/Total Loss": total_unlabel_metrics.compute(), 
                                           "UnLabel/Flow US": us_flow_metrics.compute(),
                                           "UnLabel/Corr US": us_corr_metrics.compute(), 
                                           "UnLabel/Corr UW": uw_corr_metrics.compute(),
-                                          "UnLabel/Flow U": u_flow_metrics.compute(), 
+                                        #   "UnLabel/Flow U": u_flow_metrics.compute(), 
                                           "UnLabel/Flow Uw": uw_flow_metrics.compute(),
                                           "UnLabel/FP UW": uw_fp_metrics.compute(),
                                           

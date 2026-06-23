@@ -7,7 +7,6 @@ import torch.nn.functional as F
 import math
 from einops import rearrange
 import os.path as osp
-from dataset import transform as dtf
 from model.semseg import context_module as context
 from collections import OrderedDict
 
@@ -116,7 +115,7 @@ class DeepLabV3Plus(nn.Module):
     # region update proto
     # 정답지(Label)를 보고 메모리 뱅크 업데이트
     @torch.no_grad()
-    def update_prototypes(self, c1, c2, c3, c4, label, momentum=0.6):
+    def update_prototypes(self, c1, c2, c3, c4, label, momentum=0.999):
         """
         Labeled 배치의 backbone 피처(c1~c4)와 GT label을 이용해
         각 FlowAtt 인스턴스의 class_prototypes를 EMA 방식으로 갱신.

@@ -277,14 +277,14 @@ class FlowAtt(nn.Module):
                  num_classes=19, drop_path=0.1, method='sum'):
         super(FlowAtt, self).__init__()
         self.method = method
- 
+
         # ── 메모리 뱅크: [num_classes, reduc_ch] ──────────────────────────────
         # 역전파로 갱신되지 않으며, update_prototypes()에서 EMA 방식으로만 갱신됨
         self.register_buffer("class_prototypes", torch.ones(num_classes, reduc_ch))
- 
+
         # ── PrototypeAttention (Cross-Attention w/ Memory Bank) ───────────────
         self.xca = PrototypeAttention(in_ch=channel, out_ch=reduc_ch, num_classes=num_classes)
- 
+
         # ── StarNet (Asymmetric Depthwise Star Operation) ─────────────────────
         self.star_layer = nn.Sequential(OrderedDict([
             ('reduction', nn.Sequential(
@@ -313,18 +313,18 @@ class FlowAtt(nn.Module):
             ('relu',      nn.ReLU(inplace=True)),
             ('drop_path', DropPath(drop_path) if drop_path > 0. else nn.Identity())
         ]))
- 
+
     def forward(self, feat):
         """
         feat : [B, C, H, W]
         returns : [B, C, H, W]
- 
+
         1) xca: 메모리 뱅크 참조 → 피처 보정 (feat_att)
         2) star: asymmetric star op → residual 추가
         """
         # 1. Memory Bank Cross-Attention
         feat_att = self.xca(feat, self.class_prototypes)
- 
+
         # 2. StarNet
         x = self.star_layer.reduction(feat_att)
         x1 = self.star_layer.asy_f1(x)
@@ -332,7 +332,7 @@ class FlowAtt(nn.Module):
         x  = (x1 + self.star_layer.relu(x2)) if self.method == 'sum' \
              else (x1 * self.star_layer.relu(x2))
         x  = self.star_layer.dwconv(self.star_layer.g(x))
- 
+
         return feat_att + self.star_layer.drop_path(x)
     
     
