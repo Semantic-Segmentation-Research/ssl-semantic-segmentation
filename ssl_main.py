@@ -288,8 +288,10 @@ def main():
                 results = model(torch.cat((img_lw, img_uw, img_us)))
             
                 flow_mask_lw                = results['flow_mask_lw']
+                corr_mask_lw                = results['corr_mask_lw']
+                
                 pred_lw, pred_uw            = results['mask_lw_uw'].split([label_batch, unlabel_batch])
-                pred_corr_lw, pred_corr_uw  = results['corr_mask_lw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
+                pred_corr_lw, pred_corr_uw  = results['corr_mask_lw_uw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 pred_uw_corr
                 # pred_uw_fp                  = results['mask_lw_uw_fp'][label_batch:]
                 pred_lw_fp, pred_uw_fp      = results['mask_lw_uw_fp'].split([label_batch, unlabel_batch])
                 
@@ -374,6 +376,10 @@ def main():
                                             ignore_index=tcfg.LossConfig.ignore_index,
                                             threshold=tcfg.LossConfig.ohem_threshold,
                                             min_kept=tcfg.LossConfig.ohem_min_kept)
+                label_loss_corr2 = loss_ohem(corr_mask_lw, gt_lw, 
+                                            ignore_index=tcfg.LossConfig.ignore_index,
+                                            threshold=tcfg.LossConfig.ohem_threshold,
+                                            min_kept=tcfg.LossConfig.ohem_min_kept)
                 label_aux_loss  = loss_ohem(flow_mask_lw.float(), gt_lw, 
                                             ignore_index=tcfg.LossConfig.ignore_index,
                                             threshold=tcfg.LossConfig.ohem_threshold,
@@ -414,7 +420,7 @@ def main():
                 # loss_uw_fp: UniMatch에서 가져온 loss인 것 같음.
                 # loss = ( 0.5 * label_loss + 0.5 * label_loss_corr + loss_us * 0.25 + loss_u_kl * 0.25 + loss_uw_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
                 # sum_unlabel_loss = 0.5*loss_us + 0.25 * loss_u_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
-                sum_label_loss = label_loss + label_fp_loss + label_loss_corr + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
+                sum_label_loss = label_loss + label_fp_loss + label_loss_corr + 0.5 * label_loss_corr2 + tcfg.LossConfig.aux_loss_weight * label_aux_loss + 5 * label_dice_loss
                 sum_unlabel_loss = 0.5 * loss_us + 0.25 * (loss_us_kl + loss_uw_kl) + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
                 
                 loss = sum_label_loss + sum_unlabel_loss

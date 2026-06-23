@@ -227,7 +227,7 @@ class DeepLabV3Plus(nn.Module):
             result_corr = self.xca_layer.c4(enc_out=c4_lw_uw, dec_out=pred_mask, aug_type='weak')
             
             result_dict['binary_norm_corr_map'] = result_corr["binary_norm_corr_map"]
-            result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
+            result_dict['corr_mask_lw_uw'] = result_corr["corr_dec_out"]
             result_dict['mask_lw_uw_fp'] = pred_mask_fp
             result_dict['mask_lw_uw'] = pred_mask
             # ---------------------------------------------------------
@@ -255,7 +255,10 @@ class DeepLabV3Plus(nn.Module):
             # feature = self.cls(feature)
             # pred_mask = F.interpolate(feature, size=(image_height, image_width), mode='bilinear', align_corners=True)
             pred_mask = self.decoder_layer.strong(feature, size=(image_height, image_width))
+
+            result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=pred_mask, aug_type='strong')
             
+            result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
             result_dict['flow_mask_lw'] = pred_mask
             # ---------------------------------------------------------
             
@@ -271,7 +274,6 @@ class DeepLabV3Plus(nn.Module):
             c3_val = self.flow_layer.c3(c3)
             c4_val = self.flow_layer.c4(c4)
             
-            c1_val = F.interpolate(c1_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c2_val = F.interpolate(c2_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c3_val = F.interpolate(c3_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
             c4_val = F.interpolate(c4_val, size=c1.shape[-2:], mode='bilinear', align_corners=True)
