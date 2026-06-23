@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.6.3_LTU" 
+    model_name: str     = "v1.6.4_LTU" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
