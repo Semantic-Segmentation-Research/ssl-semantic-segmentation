@@ -5,11 +5,10 @@ import os.path as osp
 import shutil
 from PIL import Image
 import torch
-import torch.nn.functional as F
 from collections import namedtuple
 import math
-from torch.optim.lr_scheduler import LambdaLR
-
+from thop import profile
+import torch.nn as nn
 
 # region - Label Table
 # ========================== Label Table ==========================
@@ -90,6 +89,38 @@ labels = [
 ]
 # =================================================================
 
+def compute_flops(tcfg, model, logger):
+    class WrapperModel(nn.Module):
+        def __init__(self, basemodel):
+            super().__init__()
+            self.model = basemodel
+
+        def forward(self, x):
+            return self.model(x, mode='val')
+
+    wrapper_model = WrapperModel(model).cuda()
+    wrapper_model.eval()
+
+    if isinstance(tcfg.crop_size, int):
+        h, w = tcfg.crop_size, tcfg.crop_size
+    else:
+        h, w = tcfg.crop_size
+
+    dummy_input = torch.randn(1, 3, h, w).cuda()
+
+    try:
+        macs, _ = profile(model, inputs=(dummy_input, "val"))
+        flops = macs * 2
+        
+        logger.info('================ Model Complexity ================')
+        logger.info(f"Input Shape : {dummy_input.shape}")
+        logger.info(f"FLOPs       : {flops / 1e9:.3f} GFLOPs")
+        logger.info(f"MACs        : {macs / 1e9:.3f} GMACs")
+        logger.info('==================================================\n')
+    except Exception as e:
+        logger.error(f"FLOPs 계산 중 오류 발생: {e}")
+        
+    model.train()
 
 
 def count_params(model):

@@ -27,9 +27,8 @@ from einops import rearrange
 from configuration import DataConfig, TrainConfig, ModelConfig
 from losses import LossFactory
 from torch.optim.lr_scheduler import LambdaLR
-from thop import profile
 from tqdm import tqdm
-
+from util import utils
 
 
 def init_seeds(seed=0, cuda_deterministic=False):
@@ -84,55 +83,8 @@ def main():
         if name.startswith('backbone') or name == '': continue  
         utils.init_non_backbone(module)
     
-    logger.info(f'Total params: {count_params(model):.1f}M\n')
-    
-    # ===================================================================
-    # [FLOPs 계산 코드 추가 부분]
-    # 모델의 forward가 다중 인자(need_fp, use_corr 등)를 요구하므로,
-    # 더미 입력 텐서만 받는 단순한 Wrapper 클래스를 정의하여 계산합니다.
-    # ===================================================================
-    class WrapperModel(nn.Module):
-        def __init__(self, basemodel):
-            super().__init__()
-            self.model = basemodel
-
-        def forward(self, x):
-            # 추론(eval) 기준 연산량을 구하기 위해 False로 설정
-            return self.model(x, mode='val')
-
-    # 모델을 GPU로 올리고 평가 모드로 전환
-    wrapper_model = WrapperModel(model).cuda()
-    wrapper_model.eval()
-
-    # 설정 파일에서 이미지 크기(crop_size) 가져오기
-    if isinstance(tcfg.crop_size, int):
-        h, w = tcfg.crop_size, tcfg.crop_size
-    else:
-        h, w = tcfg.crop_size
-
-    # Batch Size 1, Channel 3(RGB), H, W 크기의 더미(Dummy) 데이터 생성
-    dummy_input = torch.randn(1, 3, h, w).cuda()
-
-    try:
-        # profile 함수로 MACs와 파라미터 계산 (verbose=False로 불필요한 출력 숨김)
-        # macs, params = profile(wrapper_model, inputs=(dummy_input, ), verbose=False)
-        flops, params = profile(model, inputs=(dummy_input, "val"))
-        
-        # 일반적으로 1 MAC(Multiply-Accumulate) = 2 FLOPs
-        # flops = macs * 2
-        
-        logger.info('================ Model Complexity ================')
-        logger.info(f"Input Shape : {dummy_input.shape}")
-        logger.info(f"FLOPs       : {flops / 1e9:.3f} GFLOPs")
-        # logger.info(f"MACs        : {macs / 1e9:.3f} GMACs")
-        logger.info(f"Parameters  : {params / 1e6:.3f} M")
-        logger.info('==================================================\n')
-    except Exception as e:
-        logger.error(f"FLOPs 계산 중 오류 발생: {e}")
-        
-    # 다시 학습을 위해 원래 모델을 훈련 모드로 복구
-    model.train()
-    # ===================================================================
+    logger.info(f'Total params: {utils.count_params(model):.1f}M\n')
+    utils.compute_flops(tcfg, model, logger)
 
 
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) # global하게 모든 mini-batch 통합하여 평균 분산 계산
