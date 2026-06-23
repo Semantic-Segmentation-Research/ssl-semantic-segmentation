@@ -43,7 +43,7 @@ class ModelConfig:
 @dataclass
 class TrainConfig:
     dataset: str        = "cityscapes"
-    model_name: str     = "v1.5.11_LTU" 
+    model_name: str     = "v1.5.12_LTU" 
     # model_name: str     = "test" 
 
     exp_dir: str            = osp.join(BASE_DIR, "experiments")
@@ -57,7 +57,7 @@ class TrainConfig:
     
     batch_size: int     = 4
     accumulation_steps: int = 4
-    lr: float           = 3e-4
+    lr: float           = 1.25e-4
     lr_period: int      = 31 # accumulation_step 사용 시 lr_period는 1/accm
     
     

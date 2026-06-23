@@ -480,7 +480,7 @@ def main():
             # total_unlabel_loss = 0.5 * loss_us + 0.25 * loss_us_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
             # ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.5 * label_loss_corr2 + tcfg.LossConfig.aux_loss_weight * label_flow_loss + 5 * label_dice_loss
             
-            total_unlabel_loss = 0.5 * (u_flow_kl + us_corr_loss + uw_corr_loss) + 0.25 * uw_flow_loss + 0.25 * uw_fp_cr
+            total_unlabel_loss = 0.25 * (u_flow_kl + us_corr_loss + uw_corr_loss) + 0.25 * uw_flow_loss + 0.25 * uw_fp_cr
             
             full_loss = total_label_loss + total_unlabel_loss
 
