@@ -333,7 +333,6 @@ def main():
                 results = model(torch.cat((img_lw, img_uw, img_us)))
             
             flow_logit_lw               = results['flow_logit_lw']
-            # corr_mask_lw                = results['corr_mask_lw']
             
             logit_lw, logit_uw            = results['logit_lw_uw'].split([label_batch, unlabel_batch])
             corr_logit_lw, corr_logit_uw  = results['corr_logit_lw_uw'].split([label_batch, unlabel_batch]) # 6번 수식의 z값이 logit_uw_corr
@@ -343,6 +342,7 @@ def main():
             flow_logit_uw   = results['flow_logit_uw']
             flow_logit_us   = results['flow_logit_us']
             corr_logit_us   = results['corr_logit_us']
+            flow_logit_uws  = results['flow_logit_uws']
 
             # 2번 수식의 max F_hat
             logit_uw_prob = logit_uw.detach().softmax(dim=1)
@@ -433,17 +433,17 @@ def main():
             label_flow_dice_loss = loss_dice(flow_logit_lw, gt_lw)
             
             ohem_loss = label_loss + label_fp_loss + label_loss_corr + label_flow_loss
-            dice_loss = (label_dice_loss + lw_corr_dice_loss + label_flow_dice_loss)
+            dice_loss = (label_dice_loss + lw_corr_dice_loss + label_flow_dice_loss )
             total_label_loss = ohem_loss + dice_loss
             # total_label_loss = ohem_loss
             
             # --------------------------------------------------------------------
             # unlabel part
             # --------------------------------------------------------------------
-            # us_flow_loss = loss_us_cr(pred=flow_logit_us,
-            #                           true=pred_mask_uw_cutmixed, 
-            #                           confidence=conf_filter_uw_wo_cutmix, 
-            #                           ignore_mask=ignore_mask_cutmixed)
+            uws_flow_loss = loss_us_cr(pred=flow_logit_uws,
+                                      true=pred_mask_uw_cutmixed, 
+                                      confidence=conf_filter_uw_wo_cutmix, 
+                                      ignore_mask=ignore_mask_cutmixed)
             
             us_corr_loss = loss_us_cr(pred=corr_logit_us, 
                                     true=pred_mask_uw_cutmixed, 
@@ -468,6 +468,8 @@ def main():
                                       confidence=pred_conf_uw, 
                                       threshold=thresh_global, 
                                       ignore_mask=ignore_mask)
+            
+            
             # 3번 수식
             u_flow_kl   = loss_kl(flow_logit_us, logit_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
             uw_flow_kl  = loss_kl(flow_logit_uw, logit_uw, confidence=conf_filter_uw, ignore_mask=ignore_mask_cutmixed)
@@ -480,7 +482,7 @@ def main():
             # total_unlabel_loss = 0.5 * loss_us + 0.25 * loss_us_kl + 0.25 * loss_u_corr + 0.25 * loss_uw_fp
             # ohem_loss = label_loss + label_fp_loss + label_loss_corr + 0.5 * label_loss_corr2 + tcfg.LossConfig.aux_loss_weight * label_flow_loss + 5 * label_dice_loss
             
-            total_unlabel_loss = 0.25 * (u_flow_kl + us_corr_loss + uw_corr_loss) + 0.25 * uw_flow_loss + 0.25 * uw_fp_cr
+            total_unlabel_loss = 0.5*uws_flow_loss + 0.25 * (u_flow_kl + us_corr_loss + uw_corr_loss) + 0.25 * uw_flow_loss + 0.25 * uw_fp_cr
             
             full_loss = total_label_loss + total_unlabel_loss
 

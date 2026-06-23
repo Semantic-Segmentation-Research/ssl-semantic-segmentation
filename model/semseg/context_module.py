@@ -292,6 +292,20 @@ class FlowAtt(nn.Module):
                 nn.BatchNorm2d(reduc_ch),
                 nn.ReLU(True)
             )),
+            ('asy_f1_sum', nn.Sequential(
+                nn.Conv2d(reduc_ch, reduc_ch * exp_ratio, (1, 3), 1, (0, 1), bias=False),
+                nn.BatchNorm2d(reduc_ch * exp_ratio),
+                nn.Conv2d(reduc_ch * exp_ratio, reduc_ch * exp_ratio, (3, 1), 1, (1, 0), bias=False),
+                nn.BatchNorm2d(reduc_ch * exp_ratio),
+                nn.ReLU(True)
+            )),
+            ('asy_f2_sum', nn.Sequential(
+                nn.Conv2d(reduc_ch, reduc_ch * exp_ratio, (3, 1), 1, (1, 0), bias=False),
+                nn.BatchNorm2d(reduc_ch * exp_ratio),
+                nn.Conv2d(reduc_ch * exp_ratio, reduc_ch * exp_ratio, (1, 3), 1, (0, 1), bias=False),
+                nn.BatchNorm2d(reduc_ch * exp_ratio),
+                nn.ReLU(True)
+            )),
             ('asy_f1', nn.Sequential(
                 nn.Conv2d(reduc_ch, reduc_ch * exp_ratio, (1, 3), 1, (0, 1), bias=False),
                 nn.BatchNorm2d(reduc_ch * exp_ratio),
@@ -327,10 +341,15 @@ class FlowAtt(nn.Module):
 
         # 2. StarNet
         x = self.star_layer.reduction(feat_att)
-        x1 = self.star_layer.asy_f1(x)
-        x2 = self.star_layer.asy_f2(x)
-        x  = (x1 + self.star_layer.relu(x2)) if self.method == 'sum' \
-             else (x1 * self.star_layer.relu(x2))
+        if self.method == 'sum':
+            x1 = self.star_layer.asy_f1_sum(x)
+            x2 = self.star_layer.asy_f2_sum(x)
+            x  = x1 + x2
+        elif self.method == 'mul':
+            x1 = self.star_layer.asy_f1(x)
+            x2 = self.star_layer.asy_f2(x)
+            x  = x1 * self.star_layer.relu(x2)
+
         x  = self.star_layer.dwconv(self.star_layer.g(x))
 
         return feat_att + self.star_layer.drop_path(x)

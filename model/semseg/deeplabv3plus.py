@@ -189,8 +189,8 @@ class DeepLabV3Plus(nn.Module):
             # c4_us = self.flow_layer.c4(c4_lw, c4_us)
             c1_u = self.flow_layer.c1(torch.cat([c1_us, c1_uw], dim=0))
             c2_u = self.flow_layer.c2(torch.cat([c2_us, c2_uw], dim=0))
-            c4_u = self.flow_layer.c4(torch.cat([c4_us, c4_uw], dim=0))
             c3_u = self.flow_layer.c3(torch.cat([c3_us, c3_uw], dim=0))
+            c4_u = self.flow_layer.c4(torch.cat([c4_us, c4_uw], dim=0))
             
             c1_us, c1_uw = c1_u.chunk(2, dim=0)
             c2_us, c2_uw = c2_u.chunk(2, dim=0)
@@ -209,6 +209,11 @@ class DeepLabV3Plus(nn.Module):
             result_dict['corr_logit_us'] = result_corr["corr_dec_out"]
             
             # ---------------- Unlabel Weak Part ----------------
+            c1_uw = self.flow_layer.c1(c1_uw)
+            c2_uw = self.flow_layer.c2(c2_uw)
+            c3_uw = self.flow_layer.c3(c3_uw)
+            c4_uw = self.flow_layer.c4(c4_uw)
+            
             c2_uw = F.interpolate(c2_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
             c3_uw = F.interpolate(c3_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
             c4_uw = F.interpolate(c4_uw, size=c1_uw.shape[-2:], mode='bilinear', align_corners=True)
@@ -218,7 +223,7 @@ class DeepLabV3Plus(nn.Module):
             result_dict['flow_logit_uw'] = flow_logit_uw
             # ---------------------------------------------------------
             
-            
+            result_dict['flow_logit_uws'] = flow_logit_uw + flow_logit_us
             
             # ---------------- label+unlabel Weak Part ----------------
             c1_lw_uw_fp, c4_lw_uw_fp = self.aspp_layer.c14(
@@ -252,15 +257,13 @@ class DeepLabV3Plus(nn.Module):
             # logit = self.decoder_layer.strong(feature_lw, size=(image_height, image_width))
             logit = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
 
-            # result_corr = self.xca_layer.c4(enc_out=c4_lw, dec_out=logit, aug_type='strong')
-            # result_dict['corr_mask_lw'] = result_corr["corr_dec_out"]
             result_dict['flow_logit_lw'] = logit
             # ---------------------------------------------------------
             
         elif mode == 'val':
-            # c1_us, c4_us  = self.aspp_layer.c14(c1, c4)
-            # feature         = torch.cat([c1_us, c4_us], dim=1)
-            # out             = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            c1_, c4_  = self.aspp_layer.c14(c1, c4)
+            feature_ = torch.cat([c1_, c4_], dim=1)
+            # out      = self.decoder_layer.weak(feature, size=(image_height, image_width))
 
             # result_dict['out'] = out
         
@@ -280,7 +283,8 @@ class DeepLabV3Plus(nn.Module):
             
             feature = torch.cat([c1_val, c2_val, c3_val, c4_val], dim=1)
             # out = self.decoder_layer.strong(feature, size=(image_height, image_width))
-            out = self.decoder_layer.weak(feature, size=(image_height, image_width))
+            feautre_val = feature_ + feature
+            out = self.decoder_layer.weak(feautre_val, size=(image_height, image_width))
 
             result_dict['out'] = out
         
