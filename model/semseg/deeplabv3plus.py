@@ -111,6 +111,7 @@ class DeepLabV3Plus(nn.Module):
                                  ))
         ]))
         
+        self.last_conv = nn.Conv2d(4*self.mcfg.num_classes, self.mcfg.num_classes, kernel_size=1, stride=1, padding=0)
     
     # region update proto
     # 정답지(Label)를 보고 메모리 뱅크 업데이트
@@ -279,7 +280,9 @@ class DeepLabV3Plus(nn.Module):
             feature_lw = torch.cat([up4_c1_lw, up4_c2_lw, up4_c3_lw, fuse_c4_lw], dim=1)
             logit_c4 = self.decoder_layer.weak(feature_lw, size=(image_height, image_width))
             
-            logit = logit_c1 + logit_c2 + logit_c3 * logit_c4
+            logit = logit_c1 + logit_c2 + logit_c3 + logit_c4
+            # logits = torch.cat([logit_c1, logit_c2, logit_c3, logit_c4], dim=1)
+            # logit = self.last_conv(logits)
             result_dict['flow_logit_lw'] = logit
             
             # ---------------------------------------------------------
@@ -322,7 +325,9 @@ class DeepLabV3Plus(nn.Module):
             feature = torch.cat([up4_c1_val, up4_c2_val, up4_c3_val, fuse_c4_val], dim=1)
             out_c4 = self.decoder_layer.weak(feature, size=(image_height, image_width))
             
-            out = out_c1 + out_c2 + out_c3 * out_c4
+            out = out_c1 + out_c2 + out_c3 + out_c4
+            # logits = torch.cat([out_c1, out_c2, out_c3, out_c4], dim=1)
+            # out = self.last_conv(logits)
             result_dict['out'] = out
         
         return result_dict
