@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-
+import os
+import os.path as osp
 
 __all__ = ['ResNet', 'resnet50', 'resnet101']
 
@@ -153,7 +154,7 @@ class ResNet(nn.Module):
 def _resnet(arch, block, layers, pretrained, **kwargs):
     model = ResNet(block, layers, **kwargs)
     if pretrained:
-        pretrained_path = "pretrained/%s.pth" % arch
+        pretrained_path = osp.join(os.getcwd(), "pretrained/%s.pth" % arch)
         state_dict = torch.load(pretrained_path)
         model.load_state_dict(state_dict, strict=False)
     return model

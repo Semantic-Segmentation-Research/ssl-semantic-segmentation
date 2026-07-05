@@ -2,16 +2,15 @@
 dataset: cityscapes
 nclass: 19
 # crop_size: 801
-# crop_size: 352
-crop_size: 336
+crop_size: 448
 data_root: /home/dev/data
 
 # arguments for training
 epochs: 240
-# epochs: 800
-# batch_size: 2
-batch_size: 8
-lr: 0.005  # 4GPUs
+batch_size: 4
+accumulation_steps: 4 
+# lr: 0.005  # 4GPUs
+lr: 0.00125  # 1GPUs
 lr_multi: 1.0
 criterion:
   name: OHEM
@@ -22,10 +21,11 @@ criterion:
 conf_thresh: 0.0
 
 # arguments for model
-# backbone: resnet101
-backbone: resnet50
+backbone: resnet101
+# backbone: resnet50
 multi_grid: False
 replace_stride_with_dilation: [False, True, True]
 dilations: [12, 24, 36]
-pretrain: False
+# pretrain: False
+pretrain: True
 thresh_init: 0.85

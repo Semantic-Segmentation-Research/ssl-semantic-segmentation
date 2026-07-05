@@ -12,6 +12,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torch.optim import SGD
+from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from PIL import Image
 import matplotlib
@@ -40,7 +41,7 @@ parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirnam
 parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
-parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch_v2'), type=str)
+parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch_exp2'), type=str)
 
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
@@ -132,6 +133,8 @@ def main():
                      {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
                       'lr': cfg['lr'] * cfg['lr_multi']}], lr=cfg['lr'], momentum=0.9, weight_decay=1e-4)
 
+    scaler = GradScaler('cuda')
+
     # local_rank = int(os.environ["LOCAL_RANK"])
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -181,6 +184,8 @@ def main():
         checkpoint = torch.load(osp.join(args.save_path, latest_model), map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
@@ -196,8 +201,6 @@ def main():
         total_loss_corr_ce, total_loss_corr_u = 0.0, 0.0
         total_mask_ratio = 0.0
 
-        # trainloader_l.sampler.set_epoch(epoch)
-        # trainloader_u.sampler.set_epoch(epoch)
         if use_ddp:
             trainloader_l.sampler.set_epoch(epoch)
             trainloader_u.sampler.set_epoch(epoch)
@@ -208,6 +211,10 @@ def main():
         if rank == 0:
             tbar = tqdm(total=len(trainloader_l))
 
+        optimizer.zero_grad() # 방어 코드
+        accum_counter = 0
+        step_in_epoch = 0
+        
         for i, ((img_x, mask_x),
                 (img_u_w, img_u_s1, _, ignore_mask, cutmix_box1, _),
                 (img_u_w_mix, img_u_s1_mix, _, ignore_mask_mix, _, _)) in enumerate(loader):
@@ -223,7 +230,7 @@ def main():
             ignore_mask_mix = ignore_mask_mix.cuda()
             b, c, h, w = img_x.shape
 
-            with torch.no_grad():
+            with torch.no_grad(), autocast('cuda'):
                 model.eval()
                 res_u_w_mix = model(img_u_w_mix, need_fp=False, use_corr=False)
                 pred_u_w_mix = res_u_w_mix['out'].detach()
@@ -236,101 +243,115 @@ def main():
 
             num_lb, num_ulb = img_x.shape[0], img_u_w.shape[0]
 
-            res_w = model(torch.cat((img_x, img_u_w)), need_fp=True, use_corr=True)
+            with autocast('cuda'):
+                res_w = model(torch.cat((img_x, img_u_w)), need_fp=True, use_corr=True)
 
-            preds = res_w['out']
-            preds_fp = res_w['out_fp']
-            preds_corr = res_w['corr_out']
-            preds_corr_map = res_w['corr_map'].detach()
-            pred_x_corr, pred_u_w_corr = preds_corr.split([num_lb, num_ulb])
-            pred_u_w_corr_map = preds_corr_map[num_lb:]
-            pred_x, pred_u_w = preds.split([num_lb, num_ulb])
-            pred_u_w_fp = preds_fp[num_lb:]
+                preds = res_w['out']
+                preds_fp = res_w['out_fp']
+                preds_corr = res_w['corr_out']
+                preds_corr_map = res_w['corr_map'].detach()
+                pred_x_corr, pred_u_w_corr = preds_corr.split([num_lb, num_ulb])
+                pred_u_w_corr_map = preds_corr_map[num_lb:]
+                pred_x, pred_u_w = preds.split([num_lb, num_ulb])
+                pred_u_w_fp = preds_fp[num_lb:]
 
-            res_s = model(img_u_s1, need_fp=False, use_corr=True)
-            pred_u_s1 = res_s['out']
-            pred_u_s1_corr = res_s['corr_out']
+                res_s = model(img_u_s1, need_fp=False, use_corr=True)
+                pred_u_s1 = res_s['out']
+                pred_u_s1_corr = res_s['corr_out']
 
-            pred_u_w = pred_u_w.detach()
-            conf_u_w = pred_u_w.detach().softmax(dim=1).max(dim=1)[0]
-            mask_u_w = pred_u_w.detach().argmax(dim=1)
+                pred_u_w = pred_u_w.detach()
+                conf_u_w = pred_u_w.detach().softmax(dim=1).max(dim=1)[0]
+                mask_u_w = pred_u_w.detach().argmax(dim=1)
 
-            mask_u_w_cutmixed1, conf_u_w_cutmixed1, ignore_mask_cutmixed1 = \
-                mask_u_w.clone(), conf_u_w.clone(), ignore_mask.clone()
-            corr_map_u_w_cutmixed1 = pred_u_w_corr_map.clone()
-            b_sample, c_sample, _, _ = corr_map_u_w_cutmixed1.shape
+                mask_u_w_cutmixed1, conf_u_w_cutmixed1, ignore_mask_cutmixed1 = \
+                    mask_u_w.clone(), conf_u_w.clone(), ignore_mask.clone()
+                corr_map_u_w_cutmixed1 = pred_u_w_corr_map.clone()
+                b_sample, c_sample, _, _ = corr_map_u_w_cutmixed1.shape
 
-            cutmix_box1_map = (cutmix_box1 == 1)
+                cutmix_box1_map = (cutmix_box1 == 1)
 
-            mask_u_w_cutmixed1[cutmix_box1_map] = mask_u_w_mix[cutmix_box1_map]
-            mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
-            conf_u_w_cutmixed1[cutmix_box1_map] = conf_u_w_mix[cutmix_box1_map]
-            ignore_mask_cutmixed1[cutmix_box1_map] = ignore_mask_mix[cutmix_box1_map]
-            cutmix_box1_sample = rearrange(cutmix_box1_map, 'n h w -> n 1 h w')
-            ignore_mask_cutmixed1_sample = rearrange((ignore_mask_cutmixed1 != 255), 'n h w -> n 1 h w')
-            corr_map_u_w_cutmixed1 = (corr_map_u_w_cutmixed1 * ~cutmix_box1_sample * ignore_mask_cutmixed1_sample).bool()
+                mask_u_w_cutmixed1[cutmix_box1_map] = mask_u_w_mix[cutmix_box1_map]
+                mask_u_w_cutmixed1_copy = mask_u_w_cutmixed1.clone()
+                conf_u_w_cutmixed1[cutmix_box1_map] = conf_u_w_mix[cutmix_box1_map]
+                ignore_mask_cutmixed1[cutmix_box1_map] = ignore_mask_mix[cutmix_box1_map]
+                cutmix_box1_sample = rearrange(cutmix_box1_map, 'n h w -> n 1 h w')
+                ignore_mask_cutmixed1_sample = rearrange((ignore_mask_cutmixed1 != 255), 'n h w -> n 1 h w')
+                corr_map_u_w_cutmixed1 = (corr_map_u_w_cutmixed1 * ~cutmix_box1_sample * ignore_mask_cutmixed1_sample).bool()
 
-            thresh_controller.thresh_update(pred_u_w.detach(), ignore_mask_cutmixed1, update_g=True)
-            thresh_global = thresh_controller.get_thresh_global()
+                thresh_controller.thresh_update(pred_u_w.detach(), ignore_mask_cutmixed1, update_g=True)
+                thresh_global = thresh_controller.get_thresh_global()
 
-            conf_fliter_u_w = ((conf_u_w_cutmixed1 >= thresh_global) & (ignore_mask_cutmixed1 != 255))
-            conf_fliter_u_w_without_cutmix = conf_fliter_u_w.clone()
-            conf_fliter_u_w_sample = rearrange(conf_fliter_u_w_without_cutmix, 'n h w -> n 1 h w')
+                conf_fliter_u_w = ((conf_u_w_cutmixed1 >= thresh_global) & (ignore_mask_cutmixed1 != 255))
+                conf_fliter_u_w_without_cutmix = conf_fliter_u_w.clone()
+                conf_fliter_u_w_sample = rearrange(conf_fliter_u_w_without_cutmix, 'n h w -> n 1 h w')
 
-            segments = (corr_map_u_w_cutmixed1 * conf_fliter_u_w_sample).bool()
+                segments = (corr_map_u_w_cutmixed1 * conf_fliter_u_w_sample).bool()
 
-            for img_idx in range(b_sample):
-                for segment_idx in range(c_sample):
+                for img_idx in range(b_sample):
+                    for segment_idx in range(c_sample):
 
-                    segment = segments[img_idx, segment_idx]
-                    segment_ori = corr_map_u_w_cutmixed1[img_idx, segment_idx]
-                    high_conf_ratio = torch.sum(segment)/torch.sum(segment_ori)
-                    if torch.sum(segment) == 0 or high_conf_ratio < thresh_global:
-                        continue
-                    unique_cls, count = torch.unique(mask_u_w_cutmixed1[img_idx][segment==1], return_counts=True)
+                        segment = segments[img_idx, segment_idx]
+                        segment_ori = corr_map_u_w_cutmixed1[img_idx, segment_idx]
+                        high_conf_ratio = torch.sum(segment)/torch.sum(segment_ori)
+                        if torch.sum(segment) == 0 or high_conf_ratio < thresh_global:
+                            continue
+                        unique_cls, count = torch.unique(mask_u_w_cutmixed1[img_idx][segment==1], return_counts=True)
 
-                    if torch.max(count) / torch.sum(count) > thresh_global:
-                        top_class = unique_cls[torch.argmax(count)]
-                        mask_u_w_cutmixed1[img_idx][segment_ori==1] = top_class
-                        conf_fliter_u_w_without_cutmix[img_idx] = conf_fliter_u_w_without_cutmix[img_idx] | segment_ori
-            conf_fliter_u_w_without_cutmix = conf_fliter_u_w_without_cutmix | conf_fliter_u_w
+                        if torch.max(count) / torch.sum(count) > thresh_global:
+                            top_class = unique_cls[torch.argmax(count)]
+                            mask_u_w_cutmixed1[img_idx][segment_ori==1] = top_class
+                            conf_fliter_u_w_without_cutmix[img_idx] = conf_fliter_u_w_without_cutmix[img_idx] | segment_ori
+                conf_fliter_u_w_without_cutmix = conf_fliter_u_w_without_cutmix | conf_fliter_u_w
 
 
-            loss_x = criterion_l(pred_x, mask_x)
-            loss_x_corr = criterion_l(pred_x_corr, mask_x)
+                loss_x = criterion_l(pred_x, mask_x)
+                loss_x_corr = criterion_l(pred_x_corr, mask_x)
 
-            loss_u_s1 = criterion_u(pred_u_s1, mask_u_w_cutmixed1)
-            loss_u_s1 = loss_u_s1 * conf_fliter_u_w_without_cutmix
-            loss_u_s1 = torch.sum(loss_u_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
+                loss_u_s1 = criterion_u(pred_u_s1, mask_u_w_cutmixed1)
+                loss_u_s1 = loss_u_s1 * conf_fliter_u_w_without_cutmix
+                loss_u_s1 = torch.sum(loss_u_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
 
-            loss_u_corr_s1 = criterion_u(pred_u_s1_corr, mask_u_w_cutmixed1)
-            loss_u_corr_s1 = loss_u_corr_s1 * conf_fliter_u_w_without_cutmix
-            loss_u_corr_s1 = torch.sum(loss_u_corr_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
-            loss_u_corr_s = loss_u_corr_s1
+                loss_u_corr_s1 = criterion_u(pred_u_s1_corr, mask_u_w_cutmixed1)
+                loss_u_corr_s1 = loss_u_corr_s1 * conf_fliter_u_w_without_cutmix
+                loss_u_corr_s1 = torch.sum(loss_u_corr_s1) / torch.sum(ignore_mask_cutmixed1 != 255).item()
+                loss_u_corr_s = loss_u_corr_s1
 
-            loss_u_corr_w = criterion_u(pred_u_w_corr, mask_u_w)
-            loss_u_corr_w = loss_u_corr_w * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
-            loss_u_corr_w = torch.sum(loss_u_corr_w) / torch.sum(ignore_mask != 255).item()
-            loss_u_corr = 0.5 * (loss_u_corr_s + loss_u_corr_w)
+                loss_u_corr_w = criterion_u(pred_u_w_corr, mask_u_w)
+                loss_u_corr_w = loss_u_corr_w * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
+                loss_u_corr_w = torch.sum(loss_u_corr_w) / torch.sum(ignore_mask != 255).item()
+                loss_u_corr = 0.5 * (loss_u_corr_s + loss_u_corr_w)
 
-            softmax_pred_u_w = F.softmax(pred_u_w.detach(), dim=1)
-            logsoftmax_pred_u_s1 = F.log_softmax(pred_u_s1, dim=1)
+                softmax_pred_u_w = F.softmax(pred_u_w.detach(), dim=1)
+                logsoftmax_pred_u_s1 = F.log_softmax(pred_u_s1, dim=1)
 
-            loss_u_kl_sa2wa = criterion_kl(logsoftmax_pred_u_s1, softmax_pred_u_w)
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa, dim=1) * conf_fliter_u_w
-            loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa) / torch.sum(ignore_mask_cutmixed1 != 255).item()
-            loss_u_kl = loss_u_kl_sa2wa
+                loss_u_kl_sa2wa = criterion_kl(logsoftmax_pred_u_s1, softmax_pred_u_w)
+                loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa, dim=1) * conf_fliter_u_w
+                loss_u_kl_sa2wa = torch.sum(loss_u_kl_sa2wa) / torch.sum(ignore_mask_cutmixed1 != 255).item()
+                loss_u_kl = loss_u_kl_sa2wa
 
-            loss_u_w_fp = criterion_u(pred_u_w_fp, mask_u_w)
-            loss_u_w_fp = loss_u_w_fp * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
-            loss_u_w_fp = torch.sum(loss_u_w_fp) / torch.sum(ignore_mask != 255).item()
+                loss_u_w_fp = criterion_u(pred_u_w_fp, mask_u_w)
+                loss_u_w_fp = loss_u_w_fp * ((conf_u_w >= thresh_global) & (ignore_mask != 255))
+                loss_u_w_fp = torch.sum(loss_u_w_fp) / torch.sum(ignore_mask != 255).item()
 
-            loss = ( 0.5 * loss_x + 0.5 * loss_x_corr + loss_u_s1 * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
+                loss = ( 0.5 * loss_x + 0.5 * loss_x_corr + loss_u_s1 * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss / cfg['accumulation_steps']).backward()
+            accum_counter += 1
+            
+            if accum_counter == cfg['accumulation_steps']:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
+                # iters = epoch * len(trainloader_u) + i
+                iters = epoch * len(trainloader_u) + step_in_epoch
+                lr = cfg['lr'] * (1 - iters / total_iters) ** 0.9
+                optimizer.param_groups[0]["lr"] = lr
+                optimizer.param_groups[1]["lr"] = lr * cfg['lr_multi']
+                
+                step_in_epoch += 1
+                accum_counter = 0
+                
             total_loss += loss.item()
             total_loss_x += loss_x.item()
             total_loss_s += loss_u_s1.item()
@@ -340,19 +361,20 @@ def main():
             total_loss_corr_u += loss_u_corr.item()
             total_mask_ratio += ((conf_u_w >= thresh_global) & (ignore_mask != 255)).sum().item() / \
                                 (ignore_mask != 255).sum().item()
-
-            iters = epoch * len(trainloader_u) + i
-            lr = cfg['lr'] * (1 - iters / total_iters) ** 0.9
-            optimizer.param_groups[0]["lr"] = lr
-            optimizer.param_groups[1]["lr"] = lr * cfg['lr_multi']
-
+            
             if rank == 0:
                 tbar.set_description(' Total loss: {:.3f}, Loss x: {:.3f}, loss_corr_ce: {:.3f} '
-                                     'Loss s: {:.3f}, Loss w_fp: {:.3f},  Mask: {:.3f}, loss_corr_u: {:.3f}'.format(
+                                    'Loss s: {:.3f}, Loss w_fp: {:.3f},  Mask: {:.3f}, loss_corr_u: {:.3f}'.format(
                     total_loss / (i + 1), total_loss_x / (i + 1), total_loss_corr_ce / (i + 1), total_loss_s / (i + 1),
                     total_loss_w_fp / (i + 1), total_mask_ratio / (i + 1), total_loss_corr_u / (i + 1)))
                 tbar.update(1)
 
+        if accum_counter > 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            accum_counter = 0
+            
         if rank == 0:
             tbar.close()
 
@@ -380,7 +402,8 @@ def main():
             # torch.save(model.module.state_dict(), os.path.join(args.save_path, '%s_%.3f.pth' % (cfg['backbone'], mIOU)))
             torch.save({"epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict()}, osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scaler_state_dict': scaler.state_dict()}, osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
 
         if rank != 0:
             torch.distributed.barrier()
