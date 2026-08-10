@@ -52,6 +52,10 @@ class SemiDataset(Dataset):
         
         if self.mode == 'val':
             img_ori = np.array(img)
+
+            img = img.resize((self.size, self.size), resample=Image.BILINEAR)
+            mask = mask.resize((self.size, self.size), resample=Image.NEAREST)
+            
             img, mask = normalize(img, mask)
             return img, mask, id, img_ori
 

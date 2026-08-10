@@ -13,7 +13,7 @@ from dataset.semi import SemiDataset
 from util.utils import AverageMeter, intersectionAndUnion
 
 
-def evaluate(model, rank, loader, mode, cfg):
+def evaluate(model, loader, mode, cfg, rank=0):
     return_dict = {}
     model.eval()
     assert mode in ['original', 'center_crop', 'sliding_window']
@@ -21,11 +21,21 @@ def evaluate(model, rank, loader, mode, cfg):
     union_meter = AverageMeter()
 
     with torch.no_grad():
+        for _ in range(10):
+            sample = next(iter(loader))
+            img = sample[0].cuda(non_blocking=True)
+            _ = model(img)
+            torch.cuda.synchronize()
+
+        
+        inference_time = 0
+        num = 0
         for img, mask, _, _ in loader:
-            start_time = time.time()
+            # start_time = time.time()
             
             img = img.cuda()
             b, _, h, w = img.shape
+            
             if mode == 'sliding_window':
                 grid = cfg['crop_size']
                 final = torch.zeros(b, 19, h, w, device='cuda')
@@ -65,10 +75,19 @@ def evaluate(model, rank, loader, mode, cfg):
                     img = img[:, :, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
                     mask = mask[:, start_h:start_h + cfg['crop_size'], start_w:start_w + cfg['crop_size']]
 
-                res = model(img)
-                pred = res['out'].argmax(dim=1)
+                torch.cuda.synchronize()
+                start = time.perf_counter()
 
-            elapsed_time = time.time() - start_time
+                res = model(img)
+
+                torch.cuda.synchronize()
+                end = time.perf_counter()
+
+                pred = res['out'].argmax(dim=1)
+                
+                num += 1
+                inference_time += (end - start)
+            # elapsed_time = time.time() - start_time
             
             intersection, union, target = \
                 intersectionAndUnion(pred.cpu().numpy(), mask.numpy(), cfg['nclass'], 255)
@@ -84,43 +103,64 @@ def evaluate(model, rank, loader, mode, cfg):
             intersection_meter.update(reduced_intersection.cpu().numpy())
             union_meter.update(reduced_union.cpu().numpy())
 
+
+    inference_time /= num
+    inference_time *= 1000
+
+    print(f"Inference Time: {inference_time:.3f} ms")
+
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     mIOU = np.mean(iou_class) * 100.0
     return_dict['iou_class'] = iou_class
     return_dict['mIOU'] = mIOU
-    return_dict['elapsed_time'] = elapsed_time
+    # return_dict['elapsed_time'] = elapsed_time
 
     return return_dict
 
 
 def main():
     parser = argparse.ArgumentParser(description='Semi-Supervised Semantic Segmentation')
-    parser.add_argument('--config', type=str, required=True)
-    parser.add_argument('--checkpoint_path', type=str, required=True)
+    parser.add_argument('--config', type=str, default='/home/dev/ssl-semantic-segmentation/configs/cityscapes.yaml')
+    parser.add_argument('--checkpoint_path', type=str, default="/home/dev/ssl-semantic-segmentation/experiments/models/corrmatch_ver3_2/resnet50_53.906.pth")
     parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--port', default=None, type=int)
     args = parser.parse_args()
-    setup_distributed(port=args.port)
+    # setup_distributed(port=args.port)
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
 
     model = DeepLabV3Plus(cfg)
-    model.load_state_dict(torch.load(args.checkpoint_path))
+
+    checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+    state_dict = checkpoint['model_state_dict']
+    state_dict = {
+        k: v for k, v in state_dict.items()
+        if not k.endswith('total_ops') and not k.endswith('total_params')
+    }
+
+    model.load_state_dict(state_dict)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
 
-    local_rank = int(os.environ["LOCAL_RANK"])
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
-                                                      output_device=local_rank, find_unused_parameters=False)
+    # local_rank = int(os.environ["LOCAL_RANK"])
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank],
+    #                                                   output_device=local_rank, find_unused_parameters=False)
 
-    valset = SemiDataset(cfg['dataset'], cfg['data_root'], 'val')
-    valsampler = torch.utils.data.distributed.DistributedSampler(valset)
-    valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4,
-                           drop_last=False, sampler=valsampler)
+    valset = SemiDataset(cfg['dataset'], cfg['data_root'], 'val', size=cfg['crop_size'])
+    # valsampler = torch.utils.data.distributed.DistributedSampler(valset)
+    # valloader = DataLoader(valset, batch_size=1, pin_memory=True, num_workers=4,
+    #                        drop_last=False, sampler=valsampler)
+    valloader = DataLoader(valset, 
+                           batch_size=1, 
+                           pin_memory=True, 
+                           num_workers=4,
+                           drop_last=False)
 
     model.eval()
     res_val = evaluate(model, valloader, 'original', cfg)
+
     mIOU = res_val['mIOU']
     iou_class = res_val['iou_class']
+
     print(mIOU)
     print(iou_class)
 
