@@ -195,7 +195,8 @@ def main():
         start_epoch = checkpoint['epoch'] + 1
         
         previous_best = checkpoint.get('previous_best', 0.0)
-        thresh_controller.load_state(checkpoint['thresh_state'])
+        if 'thresh_state' in checkpoint:
+            thresh_controller.thresh_global = torch.tensor(checkpoint['thresh_state']).cuda()
 
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
     
@@ -228,7 +229,7 @@ def main():
                 (img_u_w, img_u_s1, _, ignore_mask, cutmix_box1, _),
                 (img_u_w_mix, img_u_s1_mix, _, ignore_mask_mix, _, _)) in enumerate(loader):
 
-            # if i == 1: break
+            if i == 1: break
             
             img_x, mask_x = img_x.cuda(), mask_x.cuda()
             img_u_w = img_u_w.cuda()
@@ -420,7 +421,7 @@ def main():
                 "model_state_dict": model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scaler_state_dict': scaler.state_dict(),
-                'thresh_state': thresh_controller.get_state()
+                'thresh_state': thresh_controller.get_thresh_global().item()
                 }, 
                 osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
 
