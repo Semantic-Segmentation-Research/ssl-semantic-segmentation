@@ -41,7 +41,7 @@ parser.add_argument('--unlabeled_id_path', type=str, default=osp.join(osp.dirnam
 parser.add_argument('--val_id_path', type=str, default=osp.join(osp.dirname(__file__), "partitions/cityscapes/val.txt"))
 parser.add_argument('--local_rank', default=0, type=int)
 parser.add_argument('--port', default=0, type=int)
-parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch_exp6'), type=str)
+parser.add_argument('--save_path', default=osp.join(osp.dirname(__file__), 'experiments/models/corrmatch_ver3_2'), type=str)
 
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
@@ -59,7 +59,8 @@ def init_seeds(seed=0, cuda_deterministic=False):
 
 def main():
     args = parser.parse_args()
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
 
     logger = init_log('global', logging.INFO)
@@ -178,9 +179,14 @@ def main():
     previous_best = 0.0
     thresh_controller = ThreshController(nclass=cfg['nclass'], momentum=0.999, thresh_init=cfg['thresh_init'])
 
+    if rank == 0:
+        torch.cuda.reset_peak_memory_stats()
+
     start_epoch = 0
     if len(os.listdir(args.save_path)) > 0:
-        latest_model = os.listdir(args.save_path)[-1]
+        model_files = sorted(os.listdir(args.save_path))
+        latest_model = model_files[-1]
+
         checkpoint = torch.load(osp.join(args.save_path, latest_model), map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -188,6 +194,9 @@ def main():
             scaler.load_state_dict(checkpoint['scaler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         
+        previous_best = checkpoint.get('previous_best', 0.0)
+        thresh_controller.load_state(checkpoint['thresh_state'])
+
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
     
     
@@ -336,6 +345,13 @@ def main():
                 loss = ( 0.5 * loss_x + 0.5 * loss_x_corr + loss_u_s1 * 0.25 + loss_u_kl * 0.25 + loss_u_w_fp * 0.25 + 0.25 * loss_u_corr) / 2.0
 
             scaler.scale(loss / cfg['accumulation_steps']).backward()
+
+            if rank == 0 and epoch == start_epoch and i == 0:
+                torch.cuda.synchronize()
+                peak_alloc = torch.cuda.max_memory_allocated() / 1e9
+                peak_reserved = torch.cuda.max_memory_reserved() / 1e9
+                logger.info(f'Peak VRAM (train step) - Allocated: {peak_alloc:.3f} GB  |  Reserved: {peak_reserved:.3f} GB')
+
             accum_counter += 1
             
             if accum_counter == cfg['accumulation_steps']:
@@ -403,7 +419,10 @@ def main():
             torch.save({"epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scaler_state_dict': scaler.state_dict()}, osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
+                'scaler_state_dict': scaler.state_dict(),
+                'thresh_state': thresh_controller.get_state()
+                }, 
+                osp.join(args.save_path, f'{cfg["backbone"]}_{res_val["mIOU"]:.3f}.pth'))
 
         if rank != 0:
             torch.distributed.barrier()

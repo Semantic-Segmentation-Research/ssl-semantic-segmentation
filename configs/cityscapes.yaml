@@ -6,7 +6,7 @@ crop_size: 448
 data_root: /home/dev/data
 
 # arguments for training
-epochs: 960
+epochs: 800
 batch_size: 4
 accumulation_steps: 4
 # lr: 0.005  # 4GPUs
