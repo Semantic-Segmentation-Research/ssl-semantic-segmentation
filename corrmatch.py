@@ -21,7 +21,6 @@ from dataset.semi import SemiDataset
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
 from util.ohem import ProbOhemCrossEntropy2d
-# from util.utils import count_params, init_log
 from util import utils
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
@@ -129,9 +128,6 @@ def main():
     previous_best = 0.0
     thresh_controller = ThreshController(nclass=cfg['nclass'], momentum=0.999, thresh_init=cfg['thresh_init'])
 
-    if rank == 0:
-        torch.cuda.reset_peak_memory_stats()
-
     start_epoch = 0
     if len(os.listdir(args.save_path)) > 0:
         model_files = sorted(os.listdir(args.save_path))
@@ -151,6 +147,9 @@ def main():
         logger.info(f"Resuming training from epoch {start_epoch} with model {latest_model}")
     
     
+    MEM_WARMUP = 10   # cudnn 워밍업 + 최소 1 accumulation cycle 확보
+    MEM_WINDOW = 20   # 이 구간의 max를 최종 peak로 채택
+
     for epoch in range(start_epoch, cfg['epochs']):
         if rank == 0:
             logger.info('===========> Epoch: {:}, LR: {:.4f}, Previous best: {:.2f}'.format(
@@ -179,7 +178,7 @@ def main():
                 (img_u_w, img_u_s1, _, ignore_mask, cutmix_box1, _),
                 (img_u_w_mix, img_u_s1_mix, _, ignore_mask_mix, _, _)) in enumerate(loader):
 
-            if i == 1: break
+            # if i == 1: break
             
             img_x, mask_x = img_x.cuda(), mask_x.cuda()
             img_u_w = img_u_w.cuda()
@@ -297,11 +296,16 @@ def main():
 
             scaler.scale(loss / cfg['accumulation_steps']).backward()
 
-            if rank == 0 and epoch == start_epoch and i == 0:
-                torch.cuda.synchronize()
-                peak_alloc = torch.cuda.max_memory_allocated() / 1e9
-                peak_reserved = torch.cuda.max_memory_reserved() / 1e9
-                logger.info(f'Peak VRAM (train step) - Allocated: {peak_alloc:.3f} GB  |  Reserved: {peak_reserved:.3f} GB')
+            if epoch == start_epoch:
+                if i == MEM_WARMUP:
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                if i == MEM_WARMUP + MEM_WINDOW:
+                    torch.cuda.synchronize()
+                    peak_alloc = torch.cuda.max_memory_allocated() / 1e9
+                    peak_reserved = torch.cuda.max_memory_reserved() / 1e9
+                    logger.info(f'Peak VRAM (steady-state, step {MEM_WARMUP}~{MEM_WARMUP+MEM_WINDOW}) - '
+                                f'Allocated: {peak_alloc:.3f} GB | Reserved: {peak_reserved:.3f} GB')
 
             accum_counter += 1
             
