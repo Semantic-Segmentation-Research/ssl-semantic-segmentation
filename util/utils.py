@@ -1,11 +1,49 @@
 import numpy as np
 import logging
 import os
+import torch
+import torch.nn as nn
+from thop import profile
 
 
 def count_params(model):
     param_num = sum(p.numel() for p in model.parameters())
     return param_num / 1e6
+
+
+def compute_flops(cfg, model, logger):
+    class WrapperModel(nn.Module):
+        def __init__(self, basemodel):
+            super().__init__()
+            self.model = basemodel
+
+        def forward(self, x):
+            return self.model(x, need_fp=False, use_corr=False)
+
+    wrapper_model = WrapperModel(model).cuda()
+    wrapper_model.eval()
+
+    crop_size = cfg.get('crop_size', (512, 512))
+    if isinstance(crop_size, int):
+        h, w = crop_size, crop_size
+    else:
+        h, w = crop_size
+
+    dummy_input = torch.randn(1, 3, h, w).cuda()
+
+    try:
+        macs, _ = profile(wrapper_model, inputs=(dummy_input, ), verbose=False)
+        flops = macs * 2
+        
+        logger.info('================ Model Complexity ================')
+        logger.info(f"Input Shape : {dummy_input.shape}")
+        logger.info(f"FLOPs       : {flops / 1e9:.3f} GFLOPs")
+        logger.info(f"MACs        : {macs / 1e9:.3f} GMACs")
+        logger.info('==================================================\n')
+    except Exception as e:
+        logger.error(f"FLOPs 계산 중 오류 발생: {e}")
+        
+    model.train()
 
 
 def color_map(dataset='pascal'):

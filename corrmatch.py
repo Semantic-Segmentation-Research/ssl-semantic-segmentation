@@ -8,16 +8,12 @@ from tqdm import tqdm
 import numpy as np
 import torch
 from torch import nn
-import torch.distributed as dist
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torch.optim import SGD
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from PIL import Image
 import matplotlib
-import matplotlib.pyplot as plt
-
 matplotlib.use('agg')
 import yaml
 
@@ -25,12 +21,12 @@ from dataset.semi import SemiDataset
 from model.semseg.deeplabv3plus import DeepLabV3Plus
 from evaluate import evaluate
 from util.ohem import ProbOhemCrossEntropy2d
-from util.utils import count_params, init_log
+# from util.utils import count_params, init_log
+from util import utils
 from util.dist_helper import setup_distributed
 from util.thresh_helper import ThreshController
 from einops import rearrange
 import random
-from thop import profile
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -63,7 +59,7 @@ def main():
     
     cfg = yaml.load(open(args.config, "r"), Loader=yaml.Loader)
 
-    logger = init_log('global', logging.INFO)
+    logger = utils.init_log('global', logging.INFO)
     logger.propagate = 0
 
     rank, world_size = setup_distributed(port=args.port)
@@ -80,55 +76,9 @@ def main():
     # sam.cuda()
 
     if rank == 0:
-        logger.info('Total params: {:.1f}M\n'.format(count_params(model)))
-        
-        # ===================================================================
-        # [FLOPs 계산 코드 추가 부분]
-        # 모델의 forward가 다중 인자(need_fp, use_corr 등)를 요구하므로,
-        # 더미 입력 텐서만 받는 단순한 Wrapper 클래스를 정의하여 계산합니다.
-        # ===================================================================
-        class WrapperModel(nn.Module):
-            def __init__(self, basemodel):
-                super().__init__()
-                self.model = basemodel
+        logger.info('Total params: {:.1f}M\n'.format(utils.count_params(model)))
+        utils.compute_flops(cfg, model, logger)
 
-            def forward(self, x):
-                # 추론(eval) 기준 연산량을 구하기 위해 False로 설정
-                return self.model(x, need_fp=False, use_corr=False)
-
-        # 모델을 GPU로 올리고 평가 모드로 전환
-        wrapper_model = WrapperModel(model).cuda()
-        wrapper_model.eval()
-
-        # 설정 파일에서 이미지 크기(crop_size) 가져오기
-        crop_size = cfg.get('crop_size', (512, 512))
-        if isinstance(crop_size, int):
-            h, w = crop_size, crop_size
-        else:
-            h, w = crop_size
-
-        # Batch Size 1, Channel 3(RGB), H, W 크기의 더미(Dummy) 데이터 생성
-        dummy_input = torch.randn(1, 3, h, w).cuda()
-
-        try:
-            # profile 함수로 MACs와 파라미터 계산 (verbose=False로 불필요한 출력 숨김)
-            macs, params = profile(wrapper_model, inputs=(dummy_input, ), verbose=False)
-            
-            # 일반적으로 1 MAC(Multiply-Accumulate) = 2 FLOPs
-            flops = macs * 2
-            
-            logger.info('================ Model Complexity ================')
-            logger.info(f"Input Shape : {dummy_input.shape}")
-            logger.info(f"FLOPs       : {flops / 1e9:.3f} GFLOPs")
-            logger.info(f"MACs        : {macs / 1e9:.3f} GMACs")
-            logger.info(f"Parameters  : {params / 1e6:.3f} M")
-            logger.info('==================================================\n')
-        except Exception as e:
-            logger.error(f"FLOPs 계산 중 오류 발생: {e}")
-            
-        # 다시 학습을 위해 원래 모델을 훈련 모드로 복구
-        model.train()
-        # ===================================================================
 
     optimizer = SGD([{'params': model.backbone.parameters(), 'lr': cfg['lr']},
                      {'params': [param for name, param in model.named_parameters() if 'backbone' not in name],
